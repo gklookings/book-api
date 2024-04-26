@@ -23,9 +23,9 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         return {"access_token": access_token, "token_type": "bearer"}
     else:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-@app.get("/")
+
+@app.get("/ask")
 async def get_answers(question: str, token: str = Depends(security)):
-    print(token)
     username = verify_token(token)
     if not username:
         raise HTTPException(
@@ -37,4 +37,10 @@ async def get_answers(question: str, token: str = Depends(security)):
     return {
         "question": question,
         "answer": response
+    }
+
+@app.get("/")
+async def health_check():
+    return {
+        "success": True
     }
