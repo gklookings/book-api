@@ -4,9 +4,21 @@ from pydantic import BaseModel
 from app.llama.get_answer import get_answer
 from app.server.auth import security,authenticate_user, create_jwt_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_token, USERNAME, PASSWORD
 from datetime import  timedelta
-
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+origins = [
+    "*",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class QueryRequest(BaseModel):
     question: str
@@ -33,10 +45,10 @@ async def get_answers(question: str, token: str = Depends(security)):
             detail="Invalid token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    response = get_answer(question)
+    data = get_answer(question)
     return {
         "question": question,
-        "answer": response
+        "answer": data.response
     }
 
 @app.get("/")

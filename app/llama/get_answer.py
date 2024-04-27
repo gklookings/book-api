@@ -16,7 +16,7 @@ def get_answer(question):
     PERSIST_DIR = "./storage"
     if not os.path.exists(PERSIST_DIR):
         # Load the documents and create the index
-        documents = SimpleDirectoryReader("llama/books").load_data()
+        documents = SimpleDirectoryReader("app/llama/books").load_data()
         index = VectorStoreIndex.from_documents(documents)
         # Store it for later
         index.storage_context.persist(persist_dir=PERSIST_DIR)

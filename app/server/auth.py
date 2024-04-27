@@ -4,14 +4,13 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta
 import os
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "default-secret-key")
+SECRET_KEY = os.environ.get("SECRET_KEY")
 USERNAME = os.environ.get("USER_NAME")
 PASSWORD = os.environ.get("PASSWORD")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 129600
 
 def authenticate_user(username: str, password: str):
-    # Dummy authentication logic (replace with actual logic)
     if username == USERNAME and password == PASSWORD:
         return True
     return False
