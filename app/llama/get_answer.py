@@ -7,11 +7,16 @@ from llama_index.core import (
 )
 import logging
 import sys
+from llama_index.core import Settings
+from llama_index.llms.openai import OpenAI
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logging.getLogger().addHandler(logging.StreamHandler(stream=sys.stdout))
 
 def get_answer(question):
+    llm = OpenAI(system_prompt="Always reply in the "+question+" language")
+    # set a global llm
+    Settings.llm = llm
     # Check if storage already exists
     PERSIST_DIR = "./storage"
     if not os.path.exists(PERSIST_DIR):
