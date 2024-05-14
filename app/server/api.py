@@ -1,7 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-from app.llama.get_answer import get_answer
+# from app.llama.get_answer import get_answer
+from app.langchain.get_answer import get_answer
 from app.server.auth import security,authenticate_user, create_jwt_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_token, USERNAME, PASSWORD
 from datetime import  timedelta
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,7 +49,7 @@ async def get_answers(question: str, token: str = Depends(security)):
     data = get_answer(question)
     return {
         "question": question,
-        "answer": data.response
+        "answer": data
     }
 
 @app.get("/")
