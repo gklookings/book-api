@@ -66,5 +66,5 @@ def get_answer(question):
   
   except Exception as e:
       # Handle the exception gracefully
-      print(f"An error occurred: {e}")
+      print(f"An error occurred in langchain: {e}")
       return "An error occured. Please try again"  # Or return an appropriate value indicating failure

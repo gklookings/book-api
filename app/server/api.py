@@ -39,18 +39,23 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
 @app.get("/ask")
 async def get_answers(question: str, token: str = Depends(security)):
-    username = verify_token(token)
-    if not username:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    data = get_answer(question)
-    return {
-        "question": question,
-        "answer": data
-    }
+    try:
+        username = verify_token(token)
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        data = get_answer(question)
+        return {
+            "question": question,
+            "answer": data
+        }
+    except Exception as e:
+      # Handle the exception gracefully
+      print(f"An error occurred: {e}")
+      return "An error occured. Please try again"  # Or return an appropriate value indicating failure
 
 @app.get("/")
 async def health_check():
