@@ -21,3 +21,5 @@ dependencies/
 
 storage
 .vercel
+output.txt
+chroma_db
