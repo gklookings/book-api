@@ -48,9 +48,11 @@ async def get_answers(question: str, token: str = Depends(security)):
                 headers={"WWW-Authenticate": "Bearer"},
             )
         data = get_answer(question)
+        # data = fetch_answer(question)
         return {
             "question": question,
-            "answer": data
+            "answer": data['answer'],
+            "context": data['docs']
         }
     except Exception as e:
       # Handle the exception gracefully
