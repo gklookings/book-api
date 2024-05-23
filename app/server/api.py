@@ -52,7 +52,7 @@ async def get_answers(question: str, token: str = Depends(security)):
         return {
             "question": question,
             "answer": data['answer'],
-            "context": data['docs']
+            "context": data['context']
         }
     except Exception as e:
       # Handle the exception gracefully
