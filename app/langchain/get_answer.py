@@ -51,7 +51,7 @@ def get_answer(question):
           embedding_function=OpenAIEmbeddings(),
       )
 
-    retriever=vectorstore.as_retriever(search_kwargs={"k":150})
+    retriever=vectorstore.as_retriever(search_kwargs={"k":75})
 
     system_prompt = (
     "Use the given context to answer the question. "
@@ -70,9 +70,11 @@ def get_answer(question):
 
     answer = qa_chain.invoke({"input": question})
 
+    print(answer)
+
     return answer
   
   except Exception as e:
       # Handle the exception gracefully
       logger.error(f"An error occurred: {e}", exc_info=True)
-      return "An error occured. Please try again"  # Or return an appropriate value indicating failure
+      return f"An error occured. Please try again {e}"  # Or return an appropriate value indicating failure

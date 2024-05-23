@@ -57,7 +57,7 @@ async def get_answers(question: str, token: str = Depends(security)):
     except Exception as e:
       # Handle the exception gracefully
       print(f"An error occurred: {e}")
-      return "An error occured. Please try again"  # Or return an appropriate value indicating failure
+      return f"An error occured. Please try again {e}"  # Or return an appropriate value indicating failure
 
 @app.get("/")
 async def health_check():
