@@ -31,8 +31,11 @@ chunk_overlap = 100
 def get_answer(question):
   try:
     # Load, chunk and index the contents.
-    loader = Docx2txtLoader("app/langchain/books/CrimePunishment.docx")
-    documents = loader.load_and_split()
+    loaders = Docx2txtLoader("app/langchain/books/خطوة بخطوة ويدا بيد مساء 20 -2-2024 3 copy.docx")
+    
+    documents = loaders.load_and_split()
+    # for loader in loaders:
+    #     documents.extend(loader.load_and_split())
 
     doc_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size,chunk_overlap=chunk_overlap)
     docs = doc_splitter.split_documents(documents)
