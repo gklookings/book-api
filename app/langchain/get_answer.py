@@ -31,11 +31,17 @@ chunk_overlap = 100
 def get_answer(question):
   try:
     # Load, chunk and index the contents.
-    loaders = Docx2txtLoader("app/langchain/books/خطوة بخطوة ويدا بيد مساء 20 -2-2024 3 copy.docx")
+    loaders = [
+       Docx2txtLoader("app/langchain/books/CrimePunishment.docx"),
+       Docx2txtLoader("app/langchain/books/خطوة بخطوة ويدا بيد مساء 20 -2-2024 3 copy.docx"),
+       Docx2txtLoader("app/langchain/books/الرِّحلة العياشيَّة 1661–1663م- المؤلف أبو سالم عبد الله بن محمد العياشي- المجلد الأول.docx"),
+       Docx2txtLoader("app/langchain/books/الرِّحلة العياشيَّة 1661–1663م- المؤلف أبو سالم عبد الله بن محمد العياشي- المجلد الثاني.docx")
+    ]
     
-    documents = loaders.load_and_split()
-    # for loader in loaders:
-    #     documents.extend(loader.load_and_split())
+    # documents = loaders.load_and_split()
+    documents = []
+    for loader in loaders:
+        documents.extend(loader.load_and_split())
 
     doc_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size,chunk_overlap=chunk_overlap)
     docs = doc_splitter.split_documents(documents)
@@ -80,4 +86,4 @@ def get_answer(question):
   except Exception as e:
       # Handle the exception gracefully
       logger.error(f"An error occurred: {e}", exc_info=True)
-      return f"An error occured. Please try again {e}"  # Or return an appropriate value indicating failure
+      return f"An error occured on answering. Please try again {e}"  # Or return an appropriate value indicating failure
