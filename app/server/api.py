@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-# from app.llama.get_answer import get_answer
 from app.langchain.get_answer import get_answer
 from app.server.auth import security,authenticate_user, create_jwt_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_token, USERNAME, PASSWORD
 from datetime import  timedelta
@@ -38,7 +37,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
 @app.get("/ask")
-async def get_answers(question: str, token: str = Depends(security)):
+async def get_answers(question: str, bookId: int, token: str = Depends(security)):
     try:
         username = verify_token(token)
         if not username:
@@ -47,8 +46,7 @@ async def get_answers(question: str, token: str = Depends(security)):
                 detail="Invalid token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        data = get_answer(question)
-        # data = fetch_answer(question)
+        data = get_answer(question, bookId)
         return {
             "question": question,
             "answer": data['answer'],
