@@ -1,6 +1,6 @@
 import os
 import bs4
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
+from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, UnstructuredExcelLoader
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -52,6 +52,8 @@ loaders.append(docLists(Docx2txtLoader("app/langchain/books/The Vines of San Lor
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/Never Trust A Skinny Italian Chef.docx"),116))
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/Leonardo da Vinci Flights of the Mind.docx"),117))
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/With the Turks in Palestine.docx"),118))
+loaders.append(docLists(UnstructuredExcelLoader("app/langchain/books/motanabi-poems.xlsx", mode="single"),119))
+loaders.append(docLists(UnstructuredExcelLoader("app/langchain/books/motanabi-Timeline.xlsx", mode="single"),120))
 
 def create_vector_store_for_document(loader, doc_id):
     documents = loader.load_and_split()
