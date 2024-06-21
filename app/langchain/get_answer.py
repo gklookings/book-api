@@ -52,7 +52,7 @@ loaders.append(docLists(Docx2txtLoader("app/langchain/books/The Vines of San Lor
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/Never Trust A Skinny Italian Chef.docx"),116))
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/Leonardo da Vinci Flights of the Mind.docx"),117))
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/With the Turks in Palestine.docx"),118))
-loaders.append(docLists(Docx2txtLoader("app/langchain/books/motanabi-poems-json.docx"),119))
+loaders.append(docLists(Docx2txtLoader("app/langchain/books/motanabi-poems.docx"),119))
 loaders.append(docLists(PyPDFLoader("app/langchain/books/motanabi-timeline.pdf"),120))
 
 def create_vector_store_for_document(loader, doc_id):
