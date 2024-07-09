@@ -53,8 +53,9 @@ loaders.append(docLists(Docx2txtLoader("app/langchain/books/Never Trust A Skinny
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/Leonardo da Vinci Flights of the Mind.docx"),117))
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/With the Turks in Palestine.docx"),118))
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/motanabi-15-all.docx"),119))
-loaders.append(docLists(Docx2txtLoader("app/langchain/books/motanabi-poems-all.docx"),121))
 loaders.append(docLists(PyPDFLoader("app/langchain/books/motanabi-timeline.pdf"),120))
+loaders.append(docLists(Docx2txtLoader("app/langchain/books/motanabi-poems-all.docx"),121))
+loaders.append(docLists(PyPDFLoader("app/langchain/books/26-1.pdf"),122))
 
 def create_vector_store_for_document(loader, doc_id):
     documents = loader.load_and_split()
