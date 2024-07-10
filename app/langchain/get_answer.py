@@ -82,11 +82,41 @@ def create_vector_store_for_document(loader, doc_id):
 
     return vectorstore
 
+def create_combined_vector_store():
+    all_docs = []
+    doc_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    
+    for loader in loaders:
+        if loader.id in {123, 124, 125, 126}:
+            documents = loader.name.load_and_split()
+            docs = doc_splitter.split_documents(documents)
+            all_docs.extend(docs)
+
+    PERSIST_DIR = "./chroma_db/combined"
+    if not os.path.exists(PERSIST_DIR):
+        embedding_function = OpenAIEmbeddings()
+        vectorstore = Chroma.from_documents(
+            all_docs,
+            embedding_function,
+            persist_directory=PERSIST_DIR
+        )
+    else:
+        vectorstore = Chroma(
+            persist_directory=PERSIST_DIR,
+            embedding_function=OpenAIEmbeddings(),
+        )
+
+    return vectorstore
+
 def get_answer(question,bookId):
     try:
-        for loader in loaders:
-          if bookId == loader.id:
-            vectorstore = create_vector_store_for_document(loader.name, bookId)
+        if bookId in {127}:
+            vectorstore = create_combined_vector_store()
+        else:
+            for loader in loaders:
+                if bookId == loader.id:
+                    vectorstore = create_vector_store_for_document(loader.name, bookId)
+                    break
           
         retrievers = vectorstore.as_retriever(search_kwargs={"k": 75})
 
