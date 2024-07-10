@@ -1,6 +1,6 @@
 import os
 import bs4
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, UnstructuredExcelLoader
+from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -56,6 +56,10 @@ loaders.append(docLists(Docx2txtLoader("app/langchain/books/motanabi-15-all.docx
 loaders.append(docLists(PyPDFLoader("app/langchain/books/motanabi-timeline.pdf"),120))
 loaders.append(docLists(Docx2txtLoader("app/langchain/books/motanabi-poems-all.docx"),121))
 loaders.append(docLists(PyPDFLoader("app/langchain/books/26-1.pdf"),122))
+loaders.append(docLists(TextLoader("app/langchain/books/Ex-mot1.txt"),123))
+loaders.append(docLists(TextLoader("app/langchain/books/Ex-mot2.txt"),124))
+loaders.append(docLists(TextLoader("app/langchain/books/Ex-mot3.txt"),125))
+loaders.append(docLists(TextLoader("app/langchain/books/Ex-mot4.txt"),126))
 
 def create_vector_store_for_document(loader, doc_id):
     documents = loader.load_and_split()
