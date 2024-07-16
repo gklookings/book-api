@@ -9,6 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 import logging
+from openai import OpenAI
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -19,6 +20,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+client = OpenAI()
 
 llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
 
@@ -108,6 +111,69 @@ def create_combined_vector_store():
 
     return vectorstore
 
+# def openAIFileSearch(question):
+
+#     assistant = client.beta.assistants.create(
+#     name="Poem Analyst Assistant",
+#     instructions="You are an expert poem analyst. Use you knowledge base to answer questions about poems and their contents based on the files provided..",
+#     model="gpt-4o",
+#     tools=[{"type": "file_search"}],
+#     )
+
+#     # Check if the vector store exists or create a new one
+#     vector_store_name = "Poems"
+#     vector_store = client.beta.vector_stores.create(name=vector_store_name)
+    
+#     # Ready the files for upload to OpenAI
+#     file_paths = ["app/langchain/books/CrimePunishment.docx"]
+#     file_streams = [open(path, "rb") for path in file_paths]
+    
+#     # Use the upload and poll SDK helper to upload the files, add them to the vector store,
+#     # and poll the status of the file batch for completion.
+#     file_batch = client.beta.vector_stores.file_batches.upload_and_poll(
+#     vector_store_id=vector_store.id, files=file_streams
+#     )
+
+#     assistant = client.beta.assistants.update(
+#     assistant_id=assistant.id,
+#     tool_resources={"file_search": {"vector_store_ids": [vector_store.id]}},
+#     )
+
+#     # Create a thread
+#     thread = client.beta.threads.create(
+#     messages=[
+#         {
+#         "role": "user",
+#         "content": question,
+#         }
+#     ]
+#     )
+
+#     run = client.beta.threads.runs.create_and_poll(
+#     thread_id=thread.id, assistant_id=assistant.id
+#     )
+
+#     messages = list(client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
+
+#     message_content = messages[0].content[0].text
+#     annotations = message_content.annotations
+#     citations = []
+#     for index, annotation in enumerate(annotations):
+#         message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
+#         if file_citation := getattr(annotation, "file_citation", None):
+#             cited_file = client.files.retrieve(file_citation.file_id)
+#             citations.append(f"[{index}] {cited_file.filename}")
+
+#     response = {
+#         "answer":message_content.value,
+#         "context":[{"page_content":"\n".join(citations)}],
+#         "quesiton":question
+#     }
+
+#     return response
+
+
+
 def get_answer(question,bookId):
     try:
         if bookId in {127}:
@@ -118,7 +184,7 @@ def get_answer(question,bookId):
                     vectorstore = create_vector_store_for_document(loader.name, bookId)
                     break
           
-        retrievers = vectorstore.as_retriever(search_kwargs={"k": 75})
+        retrievers = vectorstore.as_retriever(search_kwargs={"k": 100})
 
         system_prompt = (
             "Use the given context to answer the question. "
