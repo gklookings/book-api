@@ -19,6 +19,7 @@ libs/
 library/
 dependencies/
 
-storage
+chroma_db/
 .vercel
 output.txt
+
