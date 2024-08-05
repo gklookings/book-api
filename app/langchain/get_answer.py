@@ -129,7 +129,7 @@ def get_answer(question,bookId):
                     vectorstore = create_vector_store_for_document(loader.name, bookId)
                     break
           
-        retrievers = vectorstore.as_retriever(search_kwargs={"k": 450})
+        retrievers = vectorstore.as_retriever(search_kwargs={"k": 350})
 
         system_prompt = (
             "Use the given context to answer the question. "
