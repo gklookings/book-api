@@ -24,11 +24,6 @@ httpx==0.27.0
 idna==3.7
 joblib==1.4.0
 jose==1.0.0
-llama-index-core==0.10.31
-llama-index-embeddings-openai==0.1.8
-llama-index-llms-openai==0.1.16
-llama-index-readers-file==0.1.19
-llamaindex-py-client==0.1.18
 marshmallow==3.21.1
 multidict==6.0.5
 mypy-extensions==1.0.0
@@ -73,7 +68,7 @@ langchain==0.1.20
 langchain-community==0.0.38
 langchainhub==0.1.15
 langchain-openai==0.1.6
-langchain-chroma==0.1.0
+langchain-chroma==0.1.2
 langchain-text-splitters==0.0.1
 bs4==0.0.2
 unstructured==0.13.7
