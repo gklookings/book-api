@@ -77,3 +77,4 @@ langchain-chroma==0.1.0
 langchain-text-splitters==0.0.1
 bs4==0.0.2
 unstructured==0.13.7
+chromadb==0.5.5

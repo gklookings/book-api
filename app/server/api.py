@@ -6,6 +6,9 @@ from app.server.auth import security,authenticate_user, create_jwt_token, ACCESS
 from datetime import  timedelta
 from fastapi.middleware.cors import CORSMiddleware
 
+import chromadb
+from chromadb.config import DEFAULT_TENANT, DEFAULT_DATABASE, Settings
+
 app = FastAPI()
 
 origins = [
@@ -56,6 +59,40 @@ async def get_answers(question: str, bookId: int, token: str = Depends(security)
       # Handle the exception gracefully
       print(f"An error occurred: {e}")
       return f"An error occured. Please try again {e}"  # Or return an appropriate value indicating failure
+    
+@app.post("/chromadb")
+async def create_store():
+    try:
+        my_documents = ["Hello, world!", "Hello, Chroma!"]
+
+        # Create ChromaDB client
+        client = chromadb.HttpClient(host="localhost", port=8000)
+        print("ChromaDB client created successfully.")
+
+        # Create or retrieve the collection
+        col = client.get_or_create_collection("books")
+        print(f"Collection created or retrieved: {col}")
+
+        # Add documents to the collection
+        col.add(ids=["1", "2"], documents=my_documents)
+        print("Documents added successfully.")
+
+        # Retrieve documents to verify they were added
+        documents = col.get(ids=["1", "2"])
+
+        # List all collections
+        collections = client.list_collections()
+
+        collection_data = [
+            {"id": str(collection.id), "name": collection.name} for collection in collections
+        ]
+        
+        return {"documents": documents, "collections":collection_data}
+            
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise e  # Raising the exception to get the complete traceback
+   
 
 @app.get("/")
 async def health_check():
