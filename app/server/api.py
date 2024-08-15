@@ -1,13 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, File, HTTPException, UploadFile, status, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from app.langchain.get_answer import get_answer
 from app.server.auth import security,authenticate_user, create_jwt_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_token, USERNAME, PASSWORD
 from datetime import  timedelta
 from fastapi.middleware.cors import CORSMiddleware
-
-import chromadb
-from chromadb.config import DEFAULT_TENANT, DEFAULT_DATABASE, Settings
+from app.langchain.chroma_store import store_document
+from app.langchain.chroma_store import query_documents
 
 app = FastAPI()
 
@@ -60,39 +59,30 @@ async def get_answers(question: str, bookId: int, token: str = Depends(security)
       print(f"An error occurred: {e}")
       return f"An error occured. Please try again {e}"  # Or return an appropriate value indicating failure
     
-@app.post("/chromadb")
-async def create_store():
+@app.post("/chromadb/upload")
+async def create_store(document_id: str = Form(...), file: UploadFile = File(...)):
     try:
-        my_documents = ["Hello, world!", "Hello, Chroma!"]
-
-        # Create ChromaDB client
-        client = chromadb.HttpClient(host="localhost", port=8000)
-        print("ChromaDB client created successfully.")
-
-        # Create or retrieve the collection
-        col = client.get_or_create_collection("books")
-        print(f"Collection created or retrieved: {col}")
-
-        # Add documents to the collection
-        col.add(ids=["1", "2"], documents=my_documents)
-        print("Documents added successfully.")
-
-        # Retrieve documents to verify they were added
-        documents = col.get(ids=["1", "2"])
-
-        # List all collections
-        collections = client.list_collections()
-
-        collection_data = [
-            {"id": str(collection.id), "name": collection.name} for collection in collections
-        ]
-        
-        return {"documents": documents, "collections":collection_data}
-            
+        data = store_document(document_id, file)
+        return {
+            "_id": data["document_id"],
+            "status": data["status"]
+        }
     except Exception as e:
         print(f"An error occurred: {e}")
-        raise e  # Raising the exception to get the complete traceback
-   
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.get("/chromadb/answer")
+async def query_answer(document_id:str,query:str):
+    try:
+        data=query_documents(document_id,query)
+        return {
+            "question": query,
+            "answer": data,
+        }
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return {"error": str(e)}, 500  
 
 @app.get("/")
 async def health_check():
