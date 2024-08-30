@@ -7,6 +7,7 @@ from datetime import  timedelta
 from fastapi.middleware.cors import CORSMiddleware
 from app.langchain.chroma_store import store_document
 from app.langchain.chroma_store import query_documents
+from typing import Union
 
 app = FastAPI()
 
@@ -60,7 +61,7 @@ async def get_answers(question: str, bookId: int, token: str = Depends(security)
       return f"An error occured. Please try again {e}"  # Or return an appropriate value indicating failure
     
 @app.post("/chromadb/upload")
-async def create_store(document_id: str = Form(...), file: UploadFile = File(...)):
+async def create_store(document_id: str = Form(...), file: Union[str, UploadFile] = Form(...)):
     try:
         data = store_document(document_id, file)
         return {

@@ -5,13 +5,14 @@ from fastapi import HTTPException, UploadFile
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_openai import ChatOpenAI
 from langchain_core.documents import Document
 import tempfile
 import os
 from dotenv import load_dotenv
+from typing import Union
+import requests
 
 llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
 
@@ -28,37 +29,66 @@ openai_ef = embedding_functions.OpenAIEmbeddingFunction(
 chunk_size = 1000
 chunk_overlap = 100
 
-def extract_text_from_file(file: UploadFile):
+def extract_text_from_file(file: Union[UploadFile, str]):
     try:
-        # Check the file extension
-        _, file_extension = os.path.splitext(file.filename)
+        if isinstance(file, str):
+            # Download the file from the URL
+            response = requests.get(file)
+            if response.status_code != 200:
+                raise HTTPException(status_code=400, detail="Failed to download file from URL")
 
-        if file_extension.lower() not in [".docx", ".pdf", ".txt"]:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
+            # Create a temporary file to store the downloaded content
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                temp_file.write(response.content)
+                temp_file_path = temp_file.name
 
-        # Create a temporary file to store the uploaded content
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-            temp_file.write(file.file.read())
-            temp_file_path = temp_file.name
+            print(f"Extracting text from the file located at: {temp_file_path}")
 
-        print(f"Extracting text from the file located at: {temp_file_path}")
+            # Load the content based on the file extension
+            _, file_extension = os.path.splitext(file)
+            if file_extension.lower() == ".docx":
+                loader = Docx2txtLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".pdf":
+                loader = PyPDFLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".txt":
+                loader = TextLoader(file_path=temp_file_path)
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported file type")
 
-        # Load the content based on the file type
-        if file_extension.lower() == ".docx":
-            loader = Docx2txtLoader(file_path=temp_file_path)
-        elif file_extension.lower() == ".pdf":
-            loader = PyPDFLoader(file_path=temp_file_path)
-        elif file_extension.lower() == ".txt":
-            loader = TextLoader(file_path=temp_file_path)
+            documents = loader.load()
+        
         else:
-            raise HTTPException(status_code=400, detail="Unsupported file type")
+            # Check the file extension
+            _, file_extension = os.path.splitext(file.filename)
 
-        documents = loader.load()
+            print(f"Received file with extension: {file_extension}")
+
+            if file_extension.lower() not in [".docx", ".pdf", ".txt"]:
+                raise HTTPException(status_code=400, detail="Unsupported file type")
+
+            # Create a temporary file to store the uploaded content
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+                temp_file.write(file.file.read())
+                temp_file_path = temp_file.name
+
+            print(f"Extracting text from the file located at: {temp_file_path}")
+
+            # Load the content based on the file type
+            if file_extension.lower() == ".docx":
+                loader = Docx2txtLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".pdf":
+                loader = PyPDFLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".txt":
+                loader = TextLoader(file_path=temp_file_path)
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported file type")
+
+            documents = loader.load()
 
         # Split the document into chunks
         doc_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         docs = doc_splitter.split_documents(documents)
-        
+
         return docs
 
     except HTTPException as e:
