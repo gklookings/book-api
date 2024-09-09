@@ -1,8 +1,7 @@
-from fastapi import FastAPI, Depends, File, HTTPException, UploadFile, status, Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-from app.langchain.get_answer import get_answer
-from app.server.auth import security,authenticate_user, create_jwt_token, ACCESS_TOKEN_EXPIRE_MINUTES, verify_token, USERNAME, PASSWORD
+from app.server.auth import authenticate_user, create_jwt_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from datetime import  timedelta
 from fastapi.middleware.cors import CORSMiddleware
 from app.langchain.chroma_store import store_document
@@ -38,52 +37,53 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         return {"access_token": access_token, "token_type": "bearer"}
     else:
         raise HTTPException(status_code=401, detail="Invalid username or password")
-
-@app.get("/ask")
-async def get_answers(question: str, bookId: int, token: str = Depends(security)):
-    try:
-        username = verify_token(token)
-        if not username:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        data = get_answer(question, bookId)
-        return {
-            "question": question,
-            "answer": data['answer'],
-            "context": data['context']
-        }
-    except Exception as e:
-      # Handle the exception gracefully
-      print(f"An error occurred: {e}")
-      return f"An error occured. Please try again {e}"  # Or return an appropriate value indicating failure
+    
     
 @app.post("/chromadb/upload")
 async def create_store(document_id: str = Form(...), file: Union[str, UploadFile] = Form(...)):
     try:
-        data = store_document(document_id, file)
-        return {
-            "_id": data["document_id"],
-            "status": data["status"]
-        }
+        data, status_code = store_document(document_id, file)
+
+        # Return the success response if everything goes well
+        if status_code == 200:
+            return {
+                "_id": data["document_id"],
+                "status": data["status"],
+                "status_code": status_code
+            }
+        else:
+            # Return the error message and code if something goes wrong
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code
+            }
     except Exception as e:
-        print(f"An error occurred: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        error_message = str(e)
+        error_code = 500
+        return {"error": error_message,"status_code":error_code}
     
 
 @app.get("/chromadb/answer")
 async def query_answer(document_id:str,query:str):
     try:
-        data=query_documents(document_id,query)
-        return {
-            "question": query,
-            "answer": data,
-        }
+        data, status_code=query_documents(document_id,query)
+
+        print(f"Data: {data}, Status code: {status_code}")
+
+        if status_code == 200:
+            return {
+                "question": query,
+                "answer": data,
+                "status_code": status_code
+            }
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code
+            }
     except Exception as e:
         print(f"An error occurred: {e}")
-        return {"error": str(e)}, 500  
+        return {"error": str(e), "status_code":500}  
 
 @app.get("/")
 async def health_check():

@@ -13,6 +13,7 @@ import os
 from dotenv import load_dotenv
 from typing import Union
 import requests
+import tiktoken
 
 llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
 
@@ -21,10 +22,24 @@ client = chromadb.HttpClient(host="localhost", port=8000)
 
 load_dotenv()
 
+embedding_model = "text-embedding-3-large"
 openai_ef = embedding_functions.OpenAIEmbeddingFunction(
     api_key=os.getenv("OPENAI_API_KEY"),
-    model_name="text-embedding-3-large"
+    model_name=embedding_model
 )
+
+# Function to split text into chunks
+def split_text_into_chunks(text, model=embedding_model, max_tokens=8000):
+    encoding = tiktoken.encoding_for_model(model)  # Use appropriate model name for tokenization
+    tokens = encoding.encode(text)
+
+    # Split tokens into chunks that fit within the max token limit
+    chunks = []
+    for i in range(0, len(tokens), max_tokens):
+        chunk = tokens[i:i + max_tokens]
+        chunks.append(encoding.decode(chunk))  # Decode tokens back into text for each chunk
+    
+    return chunks
 
 chunk_size = 1000
 chunk_overlap = 100
@@ -105,24 +120,45 @@ def store_document(document_id: str, file):
         if not docs:
             return {"error": "Failed to extract content from the file."}, 400
                 
+        # Chunk the text based on the token limit
+        texts = []
+        for doc in docs:
+            text_chunks = split_text_into_chunks(doc.page_content, model=embedding_model, max_tokens=8000)
+            texts.extend(text_chunks)  # Add all chunks to the list
+        if not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
+            return {"error": "Texts must be a list of valid strings."}, 400
+
         # Create or retrieve the collection
         col = client.get_or_create_collection("documents", embedding_function=openai_ef)
         print(f"Collection created or retrieved: {col}")
 
         # Generate embeddings for each chunk and store them
-        texts = [doc.page_content for doc in docs]
         ids = [f"{document_id}_{i}" for i in range(len(docs))]
-        embeddings = openai_ef(texts)
+        print(f"Documents IDs generated")
+
+        print(f"Generating embeddings for {len(texts)} chunks")
+
+        def batch_list(lst, batch_size):
+            for i in range(0, len(lst), batch_size):
+                yield lst[i:i + batch_size]
+
+        batch_size = 100  # Adjust based on your needs
+        embeddings = []
+        for batch in batch_list(texts, batch_size):
+            batch_embeddings = openai_ef(batch)
+            embeddings.extend(batch_embeddings)
+
+        if not embeddings or len(embeddings) != len(texts):
+            return {"error": "Failed to generate embeddings."}, 500
+
+        print(f"Embeddings generated")
 
         col.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=[{"document_id": document_id}]*len(docs))
         print("Collection added successfully")
 
-        retrieved_col=col.get(include=["metadatas"])
-
-        return {"document_id": document_id, "status": "success"}
+        return {"document_id": document_id, "status": "success"}, 200
     
     except Exception as e:
-        print(f"An error occurred: {e}")
         return {"error": str(e)}, 500
     
 
@@ -158,7 +194,7 @@ def query_documents(document_id: str, query: str):
 
         # Generate the answer to the query
         answer = question_answer_chain.invoke({"context":documents,"input":query})
-        return answer
+        return answer,200
 
     except Exception as e:
         print(f"An error occurred during querying: {e}")
