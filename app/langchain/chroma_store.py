@@ -183,7 +183,7 @@ def query_documents(document_id: str, query: str):
         query_embedding = openai_ef(query)[0]
 
         # Retrieve documents similar to the query (limit to 20 documents for example)
-        results = col.query(query_embeddings=[query_embedding], n_results=50, where={"document_id": document_id})
+        results = col.query(query_embeddings=[query_embedding], n_results=100, where={"document_id": document_id})
 
         if not results or not results["documents"]:
             return {"error": "No relevant documents found."}, 404
