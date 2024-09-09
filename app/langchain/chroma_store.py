@@ -113,36 +113,47 @@ def extract_text_from_file(file: Union[UploadFile, str]):
         return None
 
 
-def store_document(document_id: str, file):
+def store_document(document_id: str, file, text: str):
     try:
-        # Extract and split text from the file
-        docs = extract_text_from_file(file)
-        if not docs:
-            return {"error": "Failed to extract content from the file."}, 400
-                
-        # Chunk the text based on the token limit
         texts = []
-        for doc in docs:
-            text_chunks = split_text_into_chunks(doc.page_content, model=embedding_model, max_tokens=8000)
-            texts.extend(text_chunks)  # Add all chunks to the list
-        if not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
-            return {"error": "Texts must be a list of valid strings."}, 400
+        
+        if text:
+            # Split the provided text into chunks
+            texts = split_text_into_chunks(text, model=embedding_model, max_tokens=8000)
+            if not texts or not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
+                return {"error": "Texts must be a list of valid strings."}, 400
+        else:
+            # Extract and split text from the uploaded file
+            docs = extract_text_from_file(file)
+            if not docs:
+                return {"error": "Failed to extract content from the file."}, 400
+                    
+            # Chunk the extracted text based on token limits
+            for doc in docs:
+                text_chunks = split_text_into_chunks(doc.page_content, model=embedding_model, max_tokens=8000)
+                texts.extend(text_chunks)  # Add all chunks to the list
+            
+            if not texts or not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
+                return {"error": "Texts must be a list of valid strings."}, 400
+
+        print(f"Texts extracted and split into chunks: {len(texts)}, {texts}")
 
         # Create or retrieve the collection
         col = client.get_or_create_collection("documents", embedding_function=openai_ef)
         print(f"Collection created or retrieved: {col}")
 
-        # Generate embeddings for each chunk and store them
-        ids = [f"{document_id}_{i}" for i in range(len(docs))]
-        print(f"Documents IDs generated")
+        # Generate unique IDs for each chunk of the document
+        ids = [f"{document_id}_{i}" for i in range(len(texts))]
+        print(f"Document IDs generated")
 
         print(f"Generating embeddings for {len(texts)} chunks")
 
+        # Helper function to batch large lists
         def batch_list(lst, batch_size):
             for i in range(0, len(lst), batch_size):
                 yield lst[i:i + batch_size]
 
-        batch_size = 100  # Adjust based on your needs
+        batch_size = 1000  # Adjust batch size as needed
         embeddings = []
         for batch in batch_list(texts, batch_size):
             batch_embeddings = openai_ef(batch)
@@ -153,7 +164,8 @@ def store_document(document_id: str, file):
 
         print(f"Embeddings generated")
 
-        col.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=[{"document_id": document_id}]*len(docs))
+        # Add the embeddings, texts, and metadata to the collection
+        col.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=[{"document_id": document_id}]*len(texts))
         print("Collection added successfully")
 
         return {"document_id": document_id, "status": "success"}, 200

@@ -40,9 +40,12 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     
     
 @app.post("/chromadb/upload")
-async def create_store(document_id: str = Form(...), file: Union[str, UploadFile] = Form(...)):
+async def create_store(document_id: str = Form(...), file: Union[str, UploadFile] = Form(None), text: str = Form(None)):
     try:
-        data, status_code = store_document(document_id, file)
+        if file is None and text is None:
+            raise HTTPException(status_code=400, detail="Either 'file' or 'text' parameter is required")
+        
+        data, status_code = store_document(document_id, file, text)
 
         # Return the success response if everything goes well
         if status_code == 200:
@@ -60,15 +63,13 @@ async def create_store(document_id: str = Form(...), file: Union[str, UploadFile
     except Exception as e:
         error_message = str(e)
         error_code = 500
-        return {"error": error_message,"status_code":error_code}
+        return {"error": error_message, "status_code": error_code}
     
 
 @app.get("/chromadb/answer")
 async def query_answer(document_id:str,query:str):
     try:
         data, status_code=query_documents(document_id,query)
-
-        print(f"Data: {data}, Status code: {status_code}")
 
         if status_code == 200:
             return {
