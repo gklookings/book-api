@@ -136,7 +136,7 @@ def store_document(document_id: str, file, text: str):
             if not texts or not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
                 return {"error": "Texts must be a list of valid strings."}, 400
 
-        print(f"Texts extracted and split into chunks: {len(texts)}, {texts}")
+        print(f"Texts extracted and split into chunks: {len(texts)}")
 
         # Create or retrieve the collection
         col = client.get_or_create_collection("documents", embedding_function=openai_ef)
@@ -183,7 +183,7 @@ def query_documents(document_id: str, query: str):
         query_embedding = openai_ef(query)[0]
 
         # Retrieve documents that are similar to the query
-        results = col.query(query_embeddings=[query_embedding], n_results=250, where={"document_id": document_id})
+        results = col.query(query_embeddings=[query_embedding], n_results=150, where={"document_id": document_id})
 
         if not results or not results["documents"]:
             return {"error": "No relevant documents found."}, 404
