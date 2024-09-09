@@ -182,14 +182,17 @@ def query_documents(document_id: str, query: str):
         # Generate an embedding for the query
         query_embedding = openai_ef(query)[0]
 
-        # Retrieve documents that are similar to the query
-        results = col.query(query_embeddings=[query_embedding], n_results=150, where={"document_id": document_id})
+        # Retrieve documents similar to the query (limit to 20 documents for example)
+        results = col.query(query_embeddings=[query_embedding], n_results=50, where={"document_id": document_id})
 
         if not results or not results["documents"]:
             return {"error": "No relevant documents found."}, 404
-        
-        # Prepare context from retrieved documents
-        documents = [Document(page_content=doc) for doc in results["documents"][0]]
+
+        # Prepare context from retrieved documents, truncating if necessary
+        documents = []
+        for doc in results["documents"][0]:
+            truncated_doc = doc[:2048]  # Truncate each document to avoid exceeding token limits
+            documents.append(Document(page_content=truncated_doc))
 
         # Create a retrieval-based QA chain using LangChain
         system_prompt = (
@@ -205,8 +208,8 @@ def query_documents(document_id: str, query: str):
         question_answer_chain = create_stuff_documents_chain(llm, prompt)
 
         # Generate the answer to the query
-        answer = question_answer_chain.invoke({"context":documents,"input":query})
-        return answer,200
+        answer = question_answer_chain.invoke({"context": documents, "input": query})
+        return answer, 200
 
     except Exception as e:
         print(f"An error occurred during querying: {e}")
