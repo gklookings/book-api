@@ -15,7 +15,7 @@ from typing import Union
 import requests
 import tiktoken
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.0)
 
 # Create ChromaDB client
 client = chromadb.HttpClient(host="localhost", port=8000)
