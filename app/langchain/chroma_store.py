@@ -1,5 +1,4 @@
 import os
-import chromadb
 import chromadb.utils.embedding_functions as embedding_functions
 from fastapi import HTTPException, UploadFile
 from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
@@ -13,31 +12,35 @@ import os
 from dotenv import load_dotenv
 from typing import Union
 import requests
-import tiktoken
+from transformers import AutoTokenizer
+import psycopg2
+import numpy as np
 
-llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.0)
+llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
 
-# Create ChromaDB client
-client = chromadb.HttpClient(host="localhost", port=8000)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+user = os.getenv("POSTGRES_USER")
+password = os.getenv("POSTGRES_PASSWORD")
 
 load_dotenv()
 
-embedding_model = "text-embedding-3-large"
-openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-    api_key=os.getenv("OPENAI_API_KEY"),
-    model_name=embedding_model
-)
+embedding_model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=embedding_model)
 
-# Function to split text into chunks
-def split_text_into_chunks(text, model=embedding_model, max_tokens=8000):
-    encoding = tiktoken.encoding_for_model(model)  # Use appropriate model name for tokenization
-    tokens = encoding.encode(text)
-
-    # Split tokens into chunks that fit within the max token limit
+# Function to split text into chunks using Hugging Face tokenizer
+def split_text_into_chunks(text, model_name=embedding_model, max_tokens=512):
+    # Load the appropriate tokenizer for the model
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    
+    # Tokenize the text
+    tokens = tokenizer.encode(text, add_special_tokens=False)  # Disable adding special tokens
+    
+    # Split tokens into chunks that fit within the max token limit of 512 tokens
     chunks = []
     for i in range(0, len(tokens), max_tokens):
         chunk = tokens[i:i + max_tokens]
-        chunks.append(encoding.decode(chunk))  # Decode tokens back into text for each chunk
+        chunks.append(tokenizer.decode(chunk, skip_special_tokens=True))  # Decode tokens back into text for each chunk
     
     return chunks
 
@@ -116,10 +119,10 @@ def extract_text_from_file(file: Union[UploadFile, str]):
 def store_document(document_id: str, file, text: str):
     try:
         texts = []
-        
+
         if text:
             # Split the provided text into chunks
-            texts = split_text_into_chunks(text, model=embedding_model, max_tokens=8000)
+            texts = split_text_into_chunks(text)
             if not texts or not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
                 return {"error": "Texts must be a list of valid strings."}, 400
         else:
@@ -130,21 +133,13 @@ def store_document(document_id: str, file, text: str):
                     
             # Chunk the extracted text based on token limits
             for doc in docs:
-                text_chunks = split_text_into_chunks(doc.page_content, model=embedding_model, max_tokens=8000)
+                text_chunks = split_text_into_chunks(doc.page_content)
                 texts.extend(text_chunks)  # Add all chunks to the list
             
             if not texts or not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
                 return {"error": "Texts must be a list of valid strings."}, 400
 
         print(f"Texts extracted and split into chunks: {len(texts)}")
-
-        # Create or retrieve the collection
-        col = client.get_or_create_collection("documents", embedding_function=openai_ef)
-        print(f"Collection created or retrieved: {col}")
-
-        # Generate unique IDs for each chunk of the document
-        ids = [f"{document_id}_{i}" for i in range(len(texts))]
-        print(f"Document IDs generated")
 
         print(f"Generating embeddings for {len(texts)} chunks")
 
@@ -156,7 +151,7 @@ def store_document(document_id: str, file, text: str):
         batch_size = 1000  # Adjust batch size as needed
         embeddings = []
         for batch in batch_list(texts, batch_size):
-            batch_embeddings = openai_ef(batch)
+            batch_embeddings = sentence_transformer_ef(batch)
             embeddings.extend(batch_embeddings)
 
         if not embeddings or len(embeddings) != len(texts):
@@ -164,35 +159,88 @@ def store_document(document_id: str, file, text: str):
 
         print(f"Embeddings generated")
 
-        # Add the embeddings, texts, and metadata to the collection
-        col.add(ids=ids, documents=texts, embeddings=embeddings, metadatas=[{"document_id": document_id}]*len(texts))
-        print("Collection added successfully")
+        # Prepare the SQL query for inserting data
+        query = """
+            INSERT INTO books (bookId, text_content, embedding)
+            VALUES (%s, %s, %s)
+        """
+
+        # Establish PostgreSQL connection
+        conn = psycopg2.connect(
+            host="ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com",
+            database="books",
+            user=user,
+            password=password,
+            connect_timeout=600
+        )
+        cur = conn.cursor()
+
+        # Clear previous records related to the document_id if needed
+        cur.execute("DELETE FROM books WHERE bookId = %s", (document_id,))
+        conn.commit()
+        print("Previous records deleted")
+
+        # Insert each document chunk and its corresponding embedding into the database
+        for i in range(len(texts)):
+            cur.execute(
+                query,
+                (document_id, texts[i] ,np.array(embeddings[i], dtype=float).tolist())
+            )
+            print(f"Inserted chunk {i + 1}")
+
+        # Commit the transaction
+        conn.commit()
+        print("Data inserted successfully")
+
+        # Close the cursor and connection
+        cur.close()
+        conn.close()
 
         return {"document_id": document_id, "status": "success"}, 200
-    
+
     except Exception as e:
         return {"error": str(e)}, 500
     
 
 def query_documents(document_id: str, query: str):
     try:
-        # Retrieve the collection
-        col = client.get_or_create_collection("documents", embedding_function=openai_ef)
+        # Establish PostgreSQL connection
+        conn = psycopg2.connect(
+            host="ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com",
+            database="books",
+            user=user,
+            password=password,
+            connect_timeout=600
+        )
+        cur = conn.cursor()
 
-        # Generate an embedding for the query
-        query_embedding = openai_ef(query)[0]
+        # Retrieve the relevant documents from the database
+        cur.execute("SELECT * FROM books WHERE bookId = %s;", (document_id,))
+        rows = cur.fetchall()
 
-        # Retrieve documents similar to the query (limit to 20 documents for example)
-        results = col.query(query_embeddings=[query_embedding], n_results=100, where={"document_id": document_id})
-
-        if not results or not results["documents"]:
+        if not rows:
             return {"error": "No relevant documents found."}, 404
+        
+        # Extract the document content and embeddings from the fetched rows
+        documents = [row[2] for row in rows]  # Assuming column 2 is embedding
+        document_texts = [row[3] for row in rows]  # Assuming column 3 is text content
 
-        # Prepare context from retrieved documents, truncating if necessary
-        documents = []
-        for doc in results["documents"][0]:
-            truncated_doc = doc[:2048]  # Truncate each document to avoid exceeding token limits
-            documents.append(Document(page_content=truncated_doc))
+        # Generate embedding for the query
+        query_embedding = sentence_transformer_ef(query)[0]
+
+        # Generate embeddings for the documents and match them with the query embedding
+        doc_embeddings = [np.array(doc, dtype=float) for doc in documents]  # Convert embeddings to numpy arrays
+
+        # Find the most similar documents based on embeddings
+        similarities = [np.dot(query_embedding, doc_embedding) / (np.linalg.norm(query_embedding) * np.linalg.norm(doc_embedding))
+                        for doc_embedding in doc_embeddings]
+
+        # Get the indices of the top most similar documents
+        top_indices = np.argsort(similarities)[-30:][::-1]
+
+        # Prepare context from the top documents
+        top_documents = [Document(page_content=document_texts[i]) for i in top_indices]
+        print(f"Retrieved {len(top_documents)} relevant documents")
 
         # Create a retrieval-based QA chain using LangChain
         system_prompt = (
@@ -208,7 +256,12 @@ def query_documents(document_id: str, query: str):
         question_answer_chain = create_stuff_documents_chain(llm, prompt)
 
         # Generate the answer to the query
-        answer = question_answer_chain.invoke({"context": documents, "input": query})
+        answer = question_answer_chain.invoke({"context": top_documents, "input": query})
+
+        # Close the cursor and connection
+        cur.close()
+        conn.close()
+
         return answer, 200
 
     except Exception as e:
