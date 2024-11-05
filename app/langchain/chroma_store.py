@@ -1,7 +1,7 @@
 import os
 import chromadb.utils.embedding_functions as embedding_functions
 from fastapi import HTTPException, UploadFile
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
+from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader, UnstructuredExcelLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -70,6 +70,8 @@ def extract_text_from_file(file: Union[UploadFile, str]):
                 loader = PyPDFLoader(file_path=temp_file_path)
             elif file_extension.lower() == ".txt":
                 loader = TextLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".xlsx":
+                loader = UnstructuredExcelLoader(file_path=temp_file_path)
             else:
                 raise HTTPException(status_code=400, detail="Unsupported file type")
 
@@ -81,7 +83,7 @@ def extract_text_from_file(file: Union[UploadFile, str]):
 
             print(f"Received file with extension: {file_extension}")
 
-            if file_extension.lower() not in [".docx", ".pdf", ".txt"]:
+            if file_extension.lower() not in [".docx", ".pdf", ".txt", ".xlsx"]:
                 raise HTTPException(status_code=400, detail="Unsupported file type")
 
             # Create a temporary file to store the uploaded content
@@ -98,6 +100,8 @@ def extract_text_from_file(file: Union[UploadFile, str]):
                 loader = PyPDFLoader(file_path=temp_file_path)
             elif file_extension.lower() == ".txt":
                 loader = TextLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".xlsx":
+                loader = UnstructuredExcelLoader(file_path=temp_file_path)
             else:
                 raise HTTPException(status_code=400, detail="Unsupported file type")
 
@@ -236,7 +240,8 @@ def query_documents(document_id: str, query: str):
                         for doc_embedding in doc_embeddings]
 
         # Get the indices of the top most similar documents
-        top_indices = np.argsort(similarities)[-30:][::-1]
+        search_value = -50 if document_id == 'IB-AwardsList' else -30
+        top_indices = np.argsort(similarities)[search_value:][::-1]
 
         # Prepare context from the top documents
         top_documents = [Document(page_content=document_texts[i]) for i in top_indices]
