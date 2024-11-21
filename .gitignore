@@ -8,7 +8,7 @@ venv/
 env/
 .venv/
 pipenv/
-
+bookapivenv
 # IDE files
 .vscode/
 .idea/
