@@ -1,7 +1,8 @@
 import os
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
-from langchain.vectorstores.pgvector import PGVector
+from langchain_openai import ChatOpenAI
+# from langchain_groq import ChatGroq
+from langchain_community.vectorstores import PGVector
 from langchain.prompts import PromptTemplate
 from langchain.chains.retrieval_qa.base import RetrievalQA
 from dotenv import load_dotenv
@@ -10,15 +11,16 @@ load_dotenv()
 
 # Initialize the components only once for efficiency
 def initialize_qa():
-    llm = ChatGroq(model=os.getenv("LLM_MODEL_NAME"), temperature=0, api_key=os.getenv("GROQ_API_KEY"))
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
+    # llm = ChatGroq(model='llama-3.1-70b-versatile', temperature=0, api_key='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')
     embeddings = HuggingFaceEmbeddings()
     
     db = PGVector.from_existing_index(
         embedding=embeddings,
-        connection_string=os.getenv("CONNECTION_STRING"),
-        collection_name=os.getenv("COLLECTION_NAME"),
+        connection_string='postgresql+psycopg2://aibook:evaibooks_12@ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com/books',
+        collection_name='poems_vector',
     )
-    retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 1})
+    retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 200})
 
     prompt_template = """
     You are a Conversational AI assistant that provides responses based on the given context. 

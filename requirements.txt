@@ -36,8 +36,8 @@ packaging
 pandas==2.2.2
 pillow==10.3.0
 pyasn1==0.6.0
-pydantic==2.7.1
-pydantic-core==2.18.2
+pydantic==2.10.0
+pydantic-core==2.27.0
 pypdf==4.2.0
 python-dateutil==2.9.0.post0
 python-jose==3.3.0
@@ -56,7 +56,7 @@ striprtf==0.0.26
 tenacity==8.2.3
 tiktoken==0.6.0
 tqdm==4.66.2
-typing-extensions==4.11.0
+typing-extensions>=4.12.2
 typing-inspect==0.9.0
 tzdata==2024.1
 urllib3==2.2.1
@@ -65,11 +65,10 @@ wrapt==1.16.0
 yarl==1.9.4
 docx2txt==0.8
 langchainhub==0.1.15
-langchain-openai==0.1.6
-langchain-chroma==0.1.2
 bs4==0.0.2
-chromadb==0.5.5
+langchain-core
 langchain-community
+langchain_openai
 langchain-text-splitters
 langchain-huggingface
 langchain-groq

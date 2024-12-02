@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.langchain.chroma_store import store_document
 from app.langchain.chroma_store import query_documents
 from typing import Union
-from langchain.chatmodel import get_answer
-from models.schemas import ChatRequest
+from app.langchain.chatmodel import get_answer
+from app.models.schemas import ChatRequest
 
 app = FastAPI()
 
