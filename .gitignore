@@ -6,9 +6,10 @@ __pycache__/
 # Virtual environments
 venv/
 env/
+.env
 .venv/
 pipenv/
-
+bookapivenv
 # IDE files
 .vscode/
 .idea/

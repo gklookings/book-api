@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.langchain.chroma_store import store_document
 from app.langchain.chroma_store import query_documents
 from typing import Union
+from app.langchain.chatmodel import get_answer
+from app.models.schemas import ChatRequest
 
 app = FastAPI()
 
@@ -91,3 +93,11 @@ async def health_check():
     return {
         "success": True
     }
+    
+@app.post("/chat")
+async def chat(request: ChatRequest):
+    try:
+        answer = get_answer(request.question)
+        return {"answer": answer}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
