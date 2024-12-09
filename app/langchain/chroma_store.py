@@ -215,12 +215,17 @@ def query_documents(document_id: str, query: str):
         query_embedding = np.array(query_embedding, dtype=np.float32)
 
         # Perform vector similarity search using pgvector
-        sql_query = """
+        if document_id == "IB-AwardsList":
+            limit = 500
+        else:
+            limit = 150
+
+        sql_query = f"""
         SELECT embedding_vector, text_content
         FROM books
         WHERE bookid = %s
         ORDER BY embedding_vector <=> %s::vector  -- Explicitly cast to vector
-        LIMIT 100;
+        LIMIT {limit};
         """
         
         # Execute the query with adapted query embedding (passing it as a numpy array directly)
