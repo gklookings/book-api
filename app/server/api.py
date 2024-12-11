@@ -128,7 +128,7 @@ async def create_batuta_model(trip_id: str = Form(...), files: list[UploadFile] 
         error_code = 500
         return {"error": error_message, "status_code": error_code}
     
-@app.get("/batuta/query")
+@app.get("/batuta/answer")
 async def query_batuta(trip_id:str,query:str):
     try:
         data, status_code=query_batuta_documents(trip_id,query)
