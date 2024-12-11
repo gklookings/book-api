@@ -1,14 +1,7 @@
 import os
-from fastapi import HTTPException, UploadFile
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader, UnstructuredExcelLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
-import tempfile
 from dotenv import load_dotenv
-from typing import Union
-import requests
-from transformers import AutoTokenizer
 from psycopg2 import extras
 import psycopg2
 import numpy as np
@@ -16,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 import ast
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.schema import Document
-
+from app.langchain.chroma_store import split_text_into_chunks, extract_text_from_file
 
 llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
 
@@ -29,86 +22,7 @@ load_dotenv()
 embedding_model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 sentence_transformer_ef = SentenceTransformer(embedding_model)
 
-# Function to split text into chunks using Hugging Face tokenizer
-def split_text_into_chunks(text, model_name=embedding_model, max_tokens=512, overlap=50):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokens = tokenizer.encode(text, add_special_tokens=False)
-    chunks = []
-    for i in range(0, len(tokens), max_tokens - overlap):
-        chunk = tokens[i:i + max_tokens]
-        decoded_chunk = tokenizer.decode(chunk, skip_special_tokens=True)
-        chunks.append(decoded_chunk)
-        if i + max_tokens >= len(tokens):
-            break
-    return chunks
-
-chunk_size = 1000
-chunk_overlap = 100
-
-def extract_text_from_file(file: Union[UploadFile, str]):
-    try:
-        if isinstance(file, str):
-            response = requests.get(file)
-            if response.status_code != 200:
-                raise HTTPException(status_code=400, detail="Failed to download file from URL")
-            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-                temp_file.write(response.content)
-                temp_file_path = temp_file.name
-
-            print(f"Extracting text from the file located at: {temp_file_path}")
-            _, file_extension = os.path.splitext(file)
-            loader = None
-            if file_extension.lower() == ".docx":
-                loader = Docx2txtLoader(file_path=temp_file_path)
-            elif file_extension.lower() == ".pdf":
-                loader = PyPDFLoader(file_path=temp_file_path)
-            elif file_extension.lower() == ".txt":
-                loader = TextLoader(file_path=temp_file_path)
-            elif file_extension.lower() == ".xlsx":
-                loader = UnstructuredExcelLoader(file_path=temp_file_path)
-            if loader:
-                documents = loader.load()
-            else:
-                raise HTTPException(status_code=400, detail="Unsupported file type")
-        
-        else:
-            _, file_extension = os.path.splitext(file.filename)
-            if file_extension.lower() not in [".docx", ".pdf", ".txt", ".xlsx"]:
-                raise HTTPException(status_code=400, detail="Unsupported file type")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-                temp_file.write(file.file.read())
-                temp_file_path = temp_file.name
-
-            print(f"Extracting text from the file located at: {temp_file_path}")
-            loader = None
-            if file_extension.lower() == ".docx":
-                loader = Docx2txtLoader(file_path=temp_file_path)
-            elif file_extension.lower() == ".pdf":
-                loader = PyPDFLoader(file_path=temp_file_path)
-            elif file_extension.lower() == ".txt":
-                loader = TextLoader(file_path=temp_file_path)
-            elif file_extension.lower() == ".xlsx":
-                loader = UnstructuredExcelLoader(file_path=temp_file_path)
-            if loader:
-                documents = loader.load()
-            else:
-                raise HTTPException(status_code=400, detail="Unsupported file type")
-        
-        print(f"Text extracted from the file: {len(documents)} documents")
-
-        doc_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        docs = doc_splitter.split_documents(documents)
-
-        return docs
-
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"Failed to extract text from the file: {e}")
-        return None
-
-
-def store_document(document_id: str, file, text: str):
+def store_batuta_documents(trip_id: str, files, text: str):
     try:
         texts = []
 
@@ -116,14 +30,15 @@ def store_document(document_id: str, file, text: str):
             texts = split_text_into_chunks(text)
             if not texts or not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
                 return {"error": "Texts must be a list of valid strings."}, 400
-        else:
-            docs = extract_text_from_file(file)
-            if not docs:
-                return {"error": "Failed to extract content from the file."}, 400
+        if files:
+            for file in files:
+                docs = extract_text_from_file(file)
+                if not docs:
+                    return {"error": f"Failed to extract content from the file: {file}"}, 400
                     
-            for doc in docs:
-                text_chunks = split_text_into_chunks(doc.page_content)
-                texts.extend(text_chunks)
+                for doc in docs:
+                    text_chunks = split_text_into_chunks(doc.page_content)
+                    texts.extend(text_chunks)
             
             if not texts or not isinstance(texts, list) or not all(isinstance(text, str) for text in texts):
                 return {"error": "Texts must be a list of valid strings."}, 400
@@ -163,18 +78,18 @@ def store_document(document_id: str, file, text: str):
 
         print("Connected to the database")
                 
-        # If data exists for this bookId, delete it
-        cur.execute("DELETE FROM books WHERE bookid = %s", (document_id,))
+        # If data exists for this tripId, delete it
+        cur.execute('DELETE FROM trips WHERE tripid = %s', (trip_id,))
         conn.commit()
         print("Old data removed if it existed.")
 
         # Insert new data
         query = """
-            INSERT INTO books (bookid, text_content, embedding_vector)
+            INSERT INTO trips (tripid, text_content, embedding_vector)
             VALUES %s
         """
         values = [
-            (document_id, texts[i], np.array(embeddings[i], dtype=np.float32).tolist()) for i in range(len(texts))
+            (trip_id, texts[i], np.array(embeddings[i], dtype=np.float32).tolist()) for i in range(len(texts))
         ]
 
         try:
@@ -185,14 +100,12 @@ def store_document(document_id: str, file, text: str):
             cur.close()
             conn.close()
 
-        return {"document_id": document_id, "status": "success"}, 200
+        return {"trip_id": trip_id, "status": "success"}, 200
 
     except Exception as e:
         return {"error": str(e)}, 500
     
-
-
-def query_documents(document_id: str, query: str):
+def query_batuta_documents(trip_id: str, query: str):
     try:
         # Acquire a connection from the pool
         conn = psycopg2.connect(
@@ -213,21 +126,16 @@ def query_documents(document_id: str, query: str):
         query_embedding = np.array(query_embedding, dtype=np.float32)
 
         # Perform vector similarity search using pgvector
-        if document_id == "IB-AwardsList":
-            limit = 500
-        else:
-            limit = 150
-
         sql_query = f"""
         SELECT embedding_vector, text_content
-        FROM books
-        WHERE bookid = %s
+        FROM trips
+        WHERE tripid = %s
         ORDER BY embedding_vector <=> %s::vector  -- Explicitly cast to vector
-        LIMIT {limit};
+        LIMIT 150;
         """
         
         # Execute the query with adapted query embedding (passing it as a numpy array directly)
-        cur.execute(sql_query, (document_id, query_embedding.tolist()))
+        cur.execute(sql_query, (trip_id, query_embedding.tolist()))
         rows = cur.fetchall()
 
         # Ensure there are results
