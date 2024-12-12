@@ -76,7 +76,8 @@ async def query_answer(document_id:str,query:str):
         if status_code == 200:
             return {
                 "question": query,
-                "answer": data,
+                "answer": data["answer"],
+                "context": data["context"],
                 "status_code": status_code
             }
         else:
@@ -136,7 +137,8 @@ async def query_batuta(trip_id:str,query:str):
         if status_code == 200:
             return {
                 "question": query,
-                "answer": data,
+                "answer": data["answer"],
+                "context": data["context"],
                 "status_code": status_code
             }
         else:

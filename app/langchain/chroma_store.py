@@ -33,11 +33,13 @@ sentence_transformer_ef = SentenceTransformer(embedding_model)
 def split_text_into_chunks(text, model_name=embedding_model, max_tokens=512, overlap=50):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokens = tokenizer.encode(text, add_special_tokens=False)
+    print(f"Tokenized text into {len(tokens)} tokens")
     chunks = []
     for i in range(0, len(tokens), max_tokens - overlap):
         chunk = tokens[i:i + max_tokens]
         decoded_chunk = tokenizer.decode(chunk, skip_special_tokens=True)
         chunks.append(decoded_chunk)
+        print(f"Decoded chunk: {decoded_chunk}, chunk length: {len(chunk)}")
         if i + max_tokens >= len(tokens):
             break
     return chunks
@@ -275,7 +277,7 @@ def query_documents(document_id: str, query: str):
         cur.close()
         conn.close()
 
-        return answer, 200
+        return {"answer": answer, "context": top_documents[:5]}, 200
 
     except Exception as e:
         print(f"An error occurred during querying: {e}")

@@ -183,7 +183,7 @@ def query_batuta_documents(trip_id: str, query: str):
         cur.close()
         conn.close()
 
-        return answer, 200
+        return {"answer": answer, "context": top_documents[:5]}, 200
 
     except Exception as e:
         print(f"An error occurred during querying: {e}")
