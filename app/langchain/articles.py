@@ -167,6 +167,7 @@ def query_articles(article_id: str, query: str):
             {{
             "answer": "string",
             "article_id": "string",
+            "article_name":"string",
             "category_id": "string",
             "category_name": "string"
             }}
@@ -174,6 +175,7 @@ def query_articles(article_id: str, query: str):
             {{
             "answer": "I don't know",
             "article_id": "",
+            "article_name":"",
             "category_id": "",
             "category_name": ""
             }}
@@ -209,6 +211,7 @@ def query_articles(article_id: str, query: str):
         response = {
             "answer": answer_dict.get("answer", "I don't know"),
             "article_id": answer_dict.get("article_id", ""),
+            "article_name": answer_dict.get("article_name", ""),
             "category_id": answer_dict.get("category_id", ""),
             "category_name": answer_dict.get("category_name", "")
         }
