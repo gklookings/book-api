@@ -7,6 +7,7 @@ import psycopg2
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import ast
+import json
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.schema import Document
 from app.langchain.chroma_store import split_text_into_chunks, extract_text_from_file
@@ -162,10 +163,23 @@ def query_articles(article_id: str, query: str):
 
         # Create a retrieval-based QA chain using LangChain
         system_prompt = (
-            "Use the given context to answer the question. "
-            "If you don't know the answer, say you don't know. "
-            "Context: {context}"
+            """Use the given context to answer the question as per the following format:
+            {{
+            "answer": "string",
+            "article_id": "string",
+            "category_id": "string",
+            "category_name": "string"
+            }}
+            If you don't know the answer, respond with:
+            {{
+            "answer": "I don't know",
+            "article_id": "",
+            "category_id": "",
+            "category_name": ""
+            }}
+            Context: {context}"""
         )
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", "{input}"),
@@ -180,7 +194,26 @@ def query_articles(article_id: str, query: str):
         cur.close()
         conn.close()
 
-        return {"answer": answer, "context": top_documents[:5]}, 200
+         # Parse the JSON string into a Python dictionary if necessary
+        try:
+                # Remove backticks and strip leading/trailing spaces
+            if answer.startswith("```json") and answer.endswith("```"):
+                cleaned_answer = answer[7:-3].strip()  # Remove "```json" and "```"
+            else:
+                cleaned_answer = answer.strip()  # Default cleaning
+            answer_dict = json.loads(cleaned_answer)  # Use json.loads for strings
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in the answer: {answer}. Error: {e}")
+
+        # Construct the response
+        response = {
+            "answer": answer_dict.get("answer", "I don't know"),
+            "article_id": answer_dict.get("article_id", ""),
+            "category_id": answer_dict.get("category_id", ""),
+            "category_name": answer_dict.get("category_name", "")
+        }
+
+        return {"answer": response, "context": top_documents[:5]}, 200
 
     except Exception as e:
         print(f"An error occurred during querying: {e}")
