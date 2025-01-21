@@ -129,7 +129,7 @@ def query_articles(article_id: str, query: str):
         FROM articles
         WHERE article_id = %s
         ORDER BY embedding_vector <=> %s::vector  -- Explicitly cast to vector
-        LIMIT 500;
+        LIMIT 230;
         """
         
         # Execute the query with adapted query embedding (passing it as a numpy array directly)
