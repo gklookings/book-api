@@ -118,106 +118,155 @@ def query_articles(article_id: str, query: str):
         print("Connected to the database")
 
         # Generate embedding for the query
-        query_embedding = sentence_transformer_ef.encode(query)  # Convert the query to an embedding
-
-        # Convert query_embedding to a numpy array of type np.float32
+        query_embedding = sentence_transformer_ef.encode(query)
         query_embedding = np.array(query_embedding, dtype=np.float32)
 
         # Perform vector similarity search using pgvector
-        sql_query = f"""
+        sql_query = """
         SELECT embedding_vector, text_content
         FROM articles
         WHERE article_id = %s
-        ORDER BY embedding_vector <=> %s::vector  -- Explicitly cast to vector
+        ORDER BY embedding_vector <=> %s::vector
         LIMIT 230;
         """
-        
-        # Execute the query with adapted query embedding (passing it as a numpy array directly)
         cur.execute(sql_query, (article_id, query_embedding.tolist()))
         rows = cur.fetchall()
 
-        # Ensure there are results
+        # Handle no results
         if not rows:
             return {"error": "No relevant documents found."}, 404
 
-        # Extract embeddings and text content from the fetched rows
+        # Parse results
         doc_embeddings = [np.array(ast.literal_eval(row[0]), dtype=np.float32) for row in rows]
         document_texts = [row[1] for row in rows]
 
-        # Sort by similarity and get the top results
-        top_documents = [
-            {
-                "page_content": document_texts[i],
-                "metadata": {
-                    "similarity": 1 - np.dot(query_embedding, doc_embeddings[i]) / 
-                    (np.linalg.norm(query_embedding) * np.linalg.norm(doc_embeddings[i]))
-                }
-            }
-            for i in range(len(doc_embeddings))
-        ]
+        # Calculate similarity scores and format top results
+        top_documents = []
+
+        # Set a threshold for "relevance"
+        for i in range(len(doc_embeddings)):
+            similarity = 1 - np.dot(query_embedding, doc_embeddings[i]) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embeddings[i])
+            )
+            if similarity > 0.5:  # Adjust this threshold as needed
+                # Only include documents that pass this threshold
+                top_documents.append({
+                    "page_content": document_texts[i],
+                    "metadata": {"similarity": similarity}
+                })
+
         print(f"Retrieved {len(top_documents)} relevant documents")
 
-        # Extract only the page content for LangChain
-        document_contents = [doc["page_content"] for doc in top_documents]
-        documents = [Document(page_content=document_texts[i]) for i in range(len(document_contents))]
+        # Prepare documents for LangChain
+        documents = [Document(page_content=doc["page_content"]) for doc in top_documents]
 
-        # Create a retrieval-based QA chain using LangChain
-        system_prompt = (
-            """Use the given context to answer the question as per the following format:
-            {{
+        # Create LangChain QA chain
+        system_prompt = """
+        You are an intelligent assistant. Use the given context to answer the question as accurately as possible. 
+        If the answer is not explicitly in the context, make an educated guess.
+
+        Format the answer based on the query:
+        - If the question requires a single response, return the answer in this JSON format:
+        {{
             "answer": "string",
             "article_id": "string",
-            "article_name":"string",
+            "article_name": "string",
             "category_id": "string",
             "category_name": "string"
-            }}
-            If you don't know the answer, respond with:
+        }}
+        - If the question requires a list of objects, return the answer as a JSON array:
+        [
             {{
+                "answer": "string",
+                "article_id": "string",
+                "article_name": "string",
+                "category_id": "string",
+                "category_name": "string"
+            }},
+            {{
+                "answer": "string",
+                "article_id": "string",
+                "article_name": "string",
+                "category_id": "string",
+                "category_name": "string"
+            }}
+            // Add more objects if needed
+        ]
+
+        If you cannot answer the question based on the context, respond with:
+        - For a single response:
+        {{
             "answer": "I don't know",
             "article_id": "",
-            "article_name":"",
+            "article_name": "",
             "category_id": "",
             "category_name": ""
-            }}
-            Context: {context}"""
-        )
+        }}
+        - For a list-based query:
+        []
 
+        Context: {context}
+        """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
             ("human", "{input}"),
         ])
-
         question_answer_chain = create_stuff_documents_chain(llm, prompt)
 
-        # Generate the answer to the query
+        # Generate answer
         answer = question_answer_chain.invoke({"context": documents, "input": query})
 
-        # Close the cursor and release the connection back to the pool
-        cur.close()
-        conn.close()
+        print(f"Answer generated: {answer}")
 
-         # Parse the JSON string into a Python dictionary if necessary
+        # Parse the answer to JSON
         try:
-                # Remove backticks and strip leading/trailing spaces
-            if answer.startswith("```json") and answer.endswith("```"):
-                cleaned_answer = answer[7:-3].strip()  # Remove "```json" and "```"
+            # Clean the answer by removing "```json" formatting if present
+            cleaned_answer = answer.strip("```json").strip() if "```json" in answer else answer.strip()
+            
+            # Parse the JSON string into a Python object (could be a dict or list)
+            parsed_answer = json.loads(cleaned_answer)
+            
+            # Check if the parsed answer is a list
+            if isinstance(parsed_answer, list):
+                # Construct the response for a list of answers
+                response_list = [
+                    {
+                        "answer": item.get("answer", "I don't know"),
+                        "article_id": item.get("article_id", ""),
+                        "article_name": item.get("article_name", ""),
+                        "category_id": item.get("category_id", ""),
+                        "category_name": item.get("category_name", "")
+                    }
+                    for item in parsed_answer
+                ]
+                response={}
+            elif isinstance(parsed_answer, dict):
+                # Construct the response for a single answer
+                response = {
+                    "answer": parsed_answer.get("answer", "I don't know"),
+                    "article_id": parsed_answer.get("article_id", ""),
+                    "article_name": parsed_answer.get("article_name", ""),
+                    "category_id": parsed_answer.get("category_id", ""),
+                    "category_name": parsed_answer.get("category_name", "")
+                }
+                response_list=[]
             else:
-                cleaned_answer = answer.strip()  # Default cleaning
-            answer_dict = json.loads(cleaned_answer)  # Use json.loads for strings
+                raise ValueError("Invalid JSON format: Expected a list or object.")
+            
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON format in the answer: {answer}. Error: {e}")
+        except Exception as e:
+            raise ValueError(f"An unexpected error occurred while processing the answer: {e}")
 
-        # Construct the response
-        response = {
-            "answer": answer_dict.get("answer", "I don't know"),
-            "article_id": answer_dict.get("article_id", ""),
-            "article_name": answer_dict.get("article_name", ""),
-            "category_id": answer_dict.get("category_id", ""),
-            "category_name": answer_dict.get("category_name", "")
-        }
-
-        return {"answer": response, "context": top_documents[:5]}, 200
+        return {"answer": response, "answer_list": response_list, "context": top_documents[:5]}, 200
 
     except Exception as e:
         print(f"An error occurred during querying: {e}")
         return {"error": str(e)}, 500
+
+    finally:
+        # Ensure resources are cleaned up
+        if 'cur' in locals() and not cur.closed:
+            cur.close()
+        if 'conn' in locals() and conn:
+            conn.close()

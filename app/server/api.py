@@ -186,6 +186,7 @@ async def query_articles_model(article_id:str,query:str):
             return {
                 "question": query,
                 "answer": data["answer"],
+                "answer_list": data["answer_list"],
                 "context": data["context"],
                 "status_code": status_code
             }
