@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
+from app.langchain.excelChatmodel import get_excel_response
 from app.server.auth import authenticate_user, create_jwt_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from datetime import  timedelta
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,10 @@ from app.langchain.chroma_store import query_documents
 from typing import Union
 from langchain.chatmodel import get_answer
 from models.schemas import ChatRequest
+from langchain.document_loaders import UnstructuredExcelLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings.huggingface import HuggingFaceEmbeddings
+from langchain.vectorstores.pgvector import PGVector
 
 app = FastAPI()
 
@@ -99,5 +104,55 @@ async def chat(request: ChatRequest):
     try:
         answer = get_answer(request.question)
         return {"answer": answer}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/vectorstore/")
+async def process_directory():
+    try:
+        # Initialize the embedding model
+        embeddings = HuggingFaceEmbeddings()
+        
+        # Load data from the directory
+        try:
+            loader = UnstructuredExcelLoader("IB-AwardsList (2).xlsx", mode="elements")
+            documents = loader.load()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error loading Excel file: {str(e)}")
+
+        # Initialize the text splitter
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        
+        # Split the documents into chunks
+        text_chunks = text_splitter.split_documents(documents)
+        
+        if not text_chunks:
+            raise HTTPException(status_code=400, detail="No text chunks were created from the document")
+
+        # Define the connection string and collection name
+        CONNECTION_STRING = "postgresql+psycopg2://aibook:evaibooks_12@ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com/books"
+        COLLECTION_NAME = "excelvectorD"
+
+        # Initialize the PGVector vector store
+        vector_store = PGVector.from_documents(
+            embedding=embeddings,
+            documents=text_chunks,
+            collection_name=COLLECTION_NAME,
+            connection_string=CONNECTION_STRING
+        )
+        
+        return {"response": "VectorStore Successfully Created", "chunks_processed": len(text_chunks)}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+
+@app.post("/chatexcel")
+async def chatExcel(request: ChatRequest):
+    try:
+        answer = get_excel_response(request.question)
+        return {"answerexcel": answer}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
