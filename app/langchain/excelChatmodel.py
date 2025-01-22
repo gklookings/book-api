@@ -12,11 +12,11 @@ load_dotenv()
 def initialize_qa():
     llm = ChatGroq(model=os.getenv("LLM_MODEL_NAME"), temperature=0, api_key=os.getenv("GROQ_API_KEY"))
     embeddings = HuggingFaceEmbeddings()
-    
+    os.environ["COLLECTION_NAME_EXCEL"] = "chatwithExcel"
     db = PGVector.from_existing_index(
         embedding=embeddings,
         connection_string=os.getenv("CONNECTION_STRING"),
-        collection_name=os.getenv("COLLECTION_NAME_EXCEL"), #COLLECTION_NAME_EXCEL = chatwithExcel
+        collection_name=os.getenv("COLLECTION_NAME_EXCEL"),
     )
     retriever = db.as_retriever(search_type="similarity", search_kwargs={"k": 1})
 
