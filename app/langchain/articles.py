@@ -154,6 +154,18 @@ def query_articles(article_id: str, query: str):
                     "page_content": document_texts[i],
                     "metadata": {"similarity": similarity}
                 })
+        
+        # If less than 50 documents, check for similarity > 0.3 and append
+        if len(top_documents) < 50:
+            for i in range(len(doc_embeddings)):
+                similarity = 1 - np.dot(query_embedding, doc_embeddings[i]) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(doc_embeddings[i])
+                )
+                if similarity > 0.3 and similarity <= 0.5:
+                    top_documents.append({
+                        "page_content": document_texts[i],
+                        "metadata": {"similarity": similarity}
+                    })
 
         print(f"Retrieved {len(top_documents)} relevant documents")
 
@@ -194,7 +206,6 @@ def query_articles(article_id: str, query: str):
         ]
 
         If you cannot answer the question based on the context, respond with:
-        - For a single response:
         {{
             "answer": "I don't know",
             "article_id": "",
@@ -202,8 +213,6 @@ def query_articles(article_id: str, query: str):
             "category_id": "",
             "category_name": ""
         }}
-        - For a list-based query:
-        []
 
         Context: {context}
         """
