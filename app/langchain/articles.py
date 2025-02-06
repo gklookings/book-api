@@ -11,6 +11,9 @@ import json
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.schema import Document
 from app.langchain.chroma_store import split_text_into_chunks, extract_text_from_file
+from psycopg2 import pool
+from scipy.spatial.distance import cosine
+
 
 llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
 
@@ -19,6 +22,13 @@ user = os.getenv("POSTGRES_USER")
 password = os.getenv("POSTGRES_PASSWORD")
 
 load_dotenv()
+
+# Initialize a connection pool
+db_pool = pool.SimpleConnectionPool(
+    minconn=1, maxconn=10,
+    host="ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com",
+    database="books", user=user, password=password
+)
 
 embedding_model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 sentence_transformer_ef = SentenceTransformer(embedding_model)
@@ -102,15 +112,8 @@ def store_articles(article_id: str, files, text: str):
         return {"error": str(e)}, 500
     
 def query_articles(article_id: str, query: str):
+    conn = db_pool.getconn()
     try:
-        # Acquire a connection from the pool
-        conn = psycopg2.connect(
-            host="ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com",
-            database="books",
-            user=user,
-            password=password,
-            connect_timeout=600
-        )
         if conn is None:
             return {"error": "Unable to acquire a connection from the pool."}, 500
         cur = conn.cursor()
@@ -123,9 +126,9 @@ def query_articles(article_id: str, query: str):
 
         # Perform vector similarity search using pgvector
         sql_query = """
-        SELECT embedding_vector, text_content
+        SELECT text_content, embedding_vector
         FROM articles
-        WHERE article_id = %s
+        WHERE article_id = %s AND embedding_vector IS NOT NULL
         ORDER BY embedding_vector <=> %s::vector
         LIMIT 230;
         """
@@ -136,36 +139,30 @@ def query_articles(article_id: str, query: str):
         if not rows:
             return {"error": "No relevant documents found."}, 404
 
-        # Parse results
-        doc_embeddings = [np.array(ast.literal_eval(row[0]), dtype=np.float32) for row in rows]
-        document_texts = [row[1] for row in rows]
-
-        # Calculate similarity scores and format top results
-        top_documents = []
-
-        # Set a threshold for "relevance"
-        for i in range(len(doc_embeddings)):
-            similarity = 1 - np.dot(query_embedding, doc_embeddings[i]) / (
-                np.linalg.norm(query_embedding) * np.linalg.norm(doc_embeddings[i])
-            )
-            if similarity > 0.5:  # Adjust this threshold as needed
-                # Only include documents that pass this threshold
-                top_documents.append({
-                    "page_content": document_texts[i],
-                    "metadata": {"similarity": similarity}
-                })
+        # Process results efficiently
+        document_texts = []
+        doc_embeddings = []
+        for row in rows:
+            document_texts.append(row[0])
+            doc_embeddings.append(np.array(json.loads(row[1]), dtype=np.float32))
         
-        # If less than 50 documents, check for similarity > 0.3 and append
+        # Compute similarity using scipy
+        similarities = [1 - cosine(query_embedding, doc_emb) for doc_emb in doc_embeddings]
+        
+        # Filter results by similarity threshold
+        top_documents = [
+            {"page_content": document_texts[i], "metadata": {"similarity": similarities[i]}}
+            for i in range(len(similarities)) if similarities[i] > 0.5
+        ]
+
+        print(f"Retrieved {len(top_documents)} >0.5 relevant documents")
+
         if len(top_documents) < 50:
-            for i in range(len(doc_embeddings)):
-                similarity = 1 - np.dot(query_embedding, doc_embeddings[i]) / (
-                    np.linalg.norm(query_embedding) * np.linalg.norm(doc_embeddings[i])
-                )
-                if similarity > 0.3 and similarity <= 0.5:
-                    top_documents.append({
-                        "page_content": document_texts[i],
-                        "metadata": {"similarity": similarity}
-                    })
+            additional_documents = [
+            {"page_content": document_texts[i], "metadata": {"similarity": similarities[i]}}
+            for i in range(len(similarities)) if 0.3 < similarities[i] <= 0.5
+            ]
+            top_documents.extend(additional_documents)
 
         print(f"Retrieved {len(top_documents)} relevant documents")
 
@@ -176,6 +173,7 @@ def query_articles(article_id: str, query: str):
         system_prompt = """
         You are an intelligent assistant. Use the given context to answer the question as accurately as possible. 
         If the answer is not explicitly in the context, make an educated guess.
+        The answer should always be in the below mentioned format. Never change the format of the answer.
 
         Format the answer based on the query:
         - If the question requires a single response, return the answer in this JSON format:
@@ -274,8 +272,5 @@ def query_articles(article_id: str, query: str):
         return {"error": str(e)}, 500
 
     finally:
-        # Ensure resources are cleaned up
-        if 'cur' in locals() and not cur.closed:
-            cur.close()
-        if 'conn' in locals() and conn:
-            conn.close()
+        cur.close()
+        db_pool.putconn(conn)
