@@ -56,11 +56,12 @@ def store_articles(article_id: str, files, text: str):
 def query_articles(article_id: str, question: str):
     try:
         retriever = vector_store.as_retriever(
-            search_type="similarity", search_kwargs={"k": 10}
+            search_type="similarity", search_kwargs={"k": 200}
         )
 
         prompt_template = """
         You are a Conversational AI assistant that provides responses based on the given context.
+        Carefully analyze the context to identify the correct article and its related information.
         Respond in one of the following formats:
 
         1. If there is a single answer:
@@ -89,7 +90,8 @@ def query_articles(article_id: str, question: str):
                 "article_name": "ARTICLE_NAME_2_HERE",
                 "category_id": "CATEGORY_ID_2_HERE",
                 "category_name": "CATEGORY_NAME_2_HERE"
-            }}
+            }},
+            ...
         ]
 
         3. If the answer is not present in the provided context:
@@ -102,6 +104,16 @@ def query_articles(article_id: str, question: str):
                 "category_name": ""
             }}
         ]
+
+        Important Instructions:
+        - Extract the answer and relevant information from the correct article block. A article block is in the format:
+            Article Name
+            Article Description
+            Article Id
+            Category Name
+            Category Id
+        - Match the answer to the most relevant article based on the context and the question.
+        - Do not mix information from different articles.
 
         Context:
         {context}
