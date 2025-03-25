@@ -8,7 +8,6 @@ from langchain_community.document_loaders import (
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 import tempfile
 from dotenv import load_dotenv
 from typing import Union
@@ -21,9 +20,10 @@ from sentence_transformers import SentenceTransformer
 import ast
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.schema import Document
+from langchain.chat_models import init_chat_model
 
 
-llm = ChatOpenAI(model="gpt-4o", temperature=0.0)
+llm = init_chat_model("gpt-4o-mini", model_provider="openai")
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 user = os.getenv("POSTGRES_USER")
