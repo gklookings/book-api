@@ -98,7 +98,7 @@ def store_articles(article_id: str, files, text: str):
 def query_articles(article_id: str, question: str):
     try:
         retriever = vector_store.as_retriever(
-            search_type="similarity", search_kwargs={"k": 10}
+            search_type="similarity", search_kwargs={"k": 50}
         )
 
         prompt_template = """
