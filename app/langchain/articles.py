@@ -33,42 +33,22 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 
 
-def extract_article_data(text):
-    # Normalize spaces and remove non-breaking spaces
-    text = text.replace("\xa0", " ").strip()
-
-    # Define regex pattern to match article blocks
-    article_pattern = (
-        r"Article Name\s*:\s*(.*?)\s*"
-        r"Article Description\s*:\s*(.*?)\s*"
-        r"Article Id\s*:\s*(\d+)\s*"
-        r"Category Name\s*:\s*(.*?)\s*"
-        r"Category Id\s*:\s*(\d+)"
-    )
-
-    matches = re.findall(article_pattern, text, re.DOTALL)
-
-    articles = []
-    for match in matches:
-        article = {
-            "article_name": match[0].strip(),
-            "article_description": match[1].strip(),
-            "article_id": match[2].strip(),
-            "category_name": match[3].strip(),
-            "category_id": match[4].strip(),
-        }
-        articles.append(article)
-
-    return articles
+def clean_vector_store():
+    try:
+        # Clean the vector store by removing all documents
+        vector_store.delete_collection()
+        vector_store.create_collection()
+        print("Vector store cleaned and collection recreated.")
+        return {"status": "success"}, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
 
 
-def store_articles(article_id: str, files, text: str):
+def store_articles(articles: list[dict]):
     try:
         documents = []
 
-        # Extract structured data from text
-        articles = extract_article_data(text)
-        print(f"Extracted {len(articles)} articles from text.")
+        print(f"Extracted {len(articles)} articles from request.")
 
         for article in articles:
             print(f"Processing article: {article}")
@@ -95,7 +75,7 @@ def store_articles(article_id: str, files, text: str):
         return {"error": str(e)}, 500
 
 
-def query_articles(article_id: str, question: str):
+def query_articles(question: str):
     try:
         retriever = vector_store.as_retriever(
             search_type="similarity", search_kwargs={"k": 50}

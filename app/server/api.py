@@ -16,7 +16,7 @@ from app.langchain.chatmodel import get_answer
 from app.models.schemas import ChatRequest
 
 from app.langchain.batuta_books import store_batuta_documents, query_batuta_documents
-from app.langchain.articles import store_articles, query_articles
+from app.langchain.articles import store_articles, query_articles, clean_vector_store
 
 app = FastAPI()
 
@@ -175,19 +175,20 @@ async def query_batuta(trip_id: str, query: str):
         return {"error": str(e), "status_code": 500}
 
 
+class ArticlesRequest(BaseModel):
+    articles: list[dict]
+
+
 @app.post("/articles/upload")
-async def create_articles_model(
-    article_id: str = Form(...),
-    files: list[UploadFile] = Form(None),
-    text: str = Form(None),
-):
+async def create_articles_model(request: ArticlesRequest):
+    articles = request.articles
     try:
-        if not files and text is None:
+        if not articles:
             raise HTTPException(
-                status_code=400, detail="Either 'files' or 'text' parameter is required"
+                status_code=400, detail="The 'articles' parameter is required"
             )
 
-        data, status_code = store_articles(article_id, files, text)
+        data, status_code = store_articles(articles)
 
         # Return the success response if everything goes well
         if status_code == 200:
@@ -208,9 +209,9 @@ async def create_articles_model(
 
 
 @app.get("/articles/answer")
-async def query_articles_model(article_id: str, query: str):
+async def query_articles_model(query: str):
     try:
-        data, status_code = query_articles(article_id, query)
+        data, status_code = query_articles(query)
 
         if status_code == 200:
             return {
@@ -227,4 +228,23 @@ async def query_articles_model(article_id: str, query: str):
             }
     except Exception as e:
         print(f"An error occurred: {e}")
+        return {"error": str(e), "status_code": 500}
+
+
+@app.post("/articles/clean")
+async def clean_articles_model():
+    try:
+        data, status_code = clean_vector_store()
+
+        if status_code == 200:
+            return {
+                "status": data["status"],
+                "status_code": status_code,
+            }
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
         return {"error": str(e), "status_code": 500}
