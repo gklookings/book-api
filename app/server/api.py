@@ -18,6 +18,8 @@ from app.models.schemas import ChatRequest
 from app.langchain.batuta_books import store_batuta_documents, query_batuta_documents
 from app.langchain.articles import store_articles, query_articles, clean_vector_store
 
+from app.langchain.diaralaqool import store_file, query_diaralaqool
+
 app = FastAPI()
 
 origins = [
@@ -248,3 +250,55 @@ async def clean_articles_model():
             }
     except Exception as e:
         return {"error": str(e), "status_code": 500}
+
+
+@app.get("/diaralaqool/answer")
+async def query_diaralaqool_model(question: str):
+    try:
+        data, status_code = query_diaralaqool(question)
+
+        if status_code == 200:
+            return {
+                "question": question,
+                "answer": data["answer"],
+                "context": data["context"],
+                "status_code": status_code,
+            }
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return {"error": str(e), "status_code": 500}
+
+
+@app.post("/diaralaqool/upload")
+async def create_diaralaqool_model(
+    file: UploadFile = Form(...),
+):
+    try:
+        if file is None:
+            raise HTTPException(
+                status_code=400, detail="The 'file' parameter is required"
+            )
+
+        data, status_code = store_file(file)
+
+        # Return the success response if everything goes well
+        if status_code == 200:
+            return {
+                "status": data["status"],
+                "status_code": status_code,
+            }
+        else:
+            # Return the error message and code if something goes wrong
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        error_message = str(e)
+        error_code = 500
+        return {"error": error_message, "status_code": error_code}
