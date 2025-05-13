@@ -20,6 +20,8 @@ from app.langchain.articles import store_articles, query_articles, clean_vector_
 
 from app.langchain.diaralaqool import store_file, query_diaralaqool
 
+from app.langchain.awards import store_awards_file, query_awards
+
 app = FastAPI()
 
 origins = [
@@ -285,6 +287,58 @@ async def create_diaralaqool_model(
             )
 
         data, status_code = store_file(file)
+
+        # Return the success response if everything goes well
+        if status_code == 200:
+            return {
+                "status": data["status"],
+                "status_code": status_code,
+            }
+        else:
+            # Return the error message and code if something goes wrong
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        error_message = str(e)
+        error_code = 500
+        return {"error": error_message, "status_code": error_code}
+
+
+@app.get("/awards/answer")
+async def query_awards_model(question: str):
+    try:
+        data, status_code = query_awards(question)
+
+        if status_code == 200:
+            return {
+                "question": question,
+                "answer": data["answer"],
+                "context": data["context"],
+                "status_code": status_code,
+            }
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return {"error": str(e), "status_code": 500}
+
+
+@app.post("/awards/upload")
+async def create_awards_model(
+    file: UploadFile = Form(...),
+):
+    try:
+        if file is None:
+            raise HTTPException(
+                status_code=400, detail="The 'file' parameter is required"
+            )
+
+        data, status_code = store_awards_file(file)
 
         # Return the success response if everything goes well
         if status_code == 200:
