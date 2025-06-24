@@ -17,7 +17,7 @@ password = os.getenv("POSTGRES_PASSWORD")
 
 load_dotenv()
 
-llm = init_chat_model("gpt-4o-mini", model_provider="openai")
+llm = init_chat_model("gpt-4o", model_provider="openai")
 embeddings = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small")
 
 vector_store = PGVector(
