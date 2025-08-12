@@ -22,6 +22,8 @@ from app.langchain.diaralaqool import store_file, query_diaralaqool
 
 from app.langchain.awards import store_awards_file, query_awards
 
+from app.langchain.cinema import query_cinema
+
 app = FastAPI()
 
 origins = [
@@ -356,3 +358,23 @@ async def create_awards_model(
         error_message = str(e)
         error_code = 500
         return {"error": error_message, "status_code": error_code}
+
+
+@app.get("/cinema/answer")
+async def query_cinema_model(query: str):
+    try:
+        data, status_code = query_cinema(query)
+        if status_code == 200:
+            return {
+                "question": query,
+                "answer": data["answer"],
+                "status_code": status_code,
+            }
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return {"error": str(e), "status_code": 500}
