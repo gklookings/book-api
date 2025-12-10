@@ -24,6 +24,15 @@ from app.langchain.awards import store_awards_file, query_awards
 
 from app.langchain.cinema import query_cinema
 
+from app.langchain.scientist import (
+    start_game,
+    ask_question,
+    guess_scientist,
+    AskQuestion,
+    Guess,
+)
+
+
 app = FastAPI()
 
 origins = [
@@ -378,3 +387,48 @@ async def query_cinema_model(query: str):
     except Exception as e:
         print(f"An error occurred: {e}")
         return {"error": str(e), "status_code": 500}
+
+
+@app.get("/scientist/start")
+async def start_session():
+    try:
+        data, status_code = start_game()
+        if status_code == 200:
+            return {"data": data, "status_code": status_code}
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.post("/scientist/ask")
+async def ask(params: AskQuestion):
+    try:
+        data, status_code = ask_question(params)
+        if status_code == 200:
+            return {"data": data, "status_code": status_code}
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.post("/scientist/guess")
+async def guess(params: Guess):
+    try:
+        data, status_code = guess_scientist(params)
+        if status_code == 200:
+            return {"data": data, "status_code": status_code}
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        return {"error": str(e)}, 500
