@@ -88,7 +88,7 @@ def start_game():
 
         return {
             "message": "Game started",
-            "questions_left": 10,
+            "questions_left": 20,
             "secret_chosen": True,
             "session_id": session_id,
         }, 200
@@ -104,7 +104,7 @@ def ask_question(data: AskQuestion):
         if not session:
             return {"error": "Invalid session"}, 404
 
-        if session["question_count"] >= 10:
+        if session["question_count"] >= 20:
             return {"error": "No more questions allowed"}, 400
 
         scientist = session["scientist"]
@@ -144,7 +144,7 @@ def ask_question(data: AskQuestion):
         return {
             "answer": answer,
             "questions_used": session["question_count"],
-            "questions_left": 10 - session["question_count"],
+            "questions_left": 20 - session["question_count"],
         }, 200
     except Exception as e:
         return {"error": str(e)}, 500
