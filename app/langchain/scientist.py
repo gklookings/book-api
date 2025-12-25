@@ -51,13 +51,14 @@ def save_session(session):
         conn.execute(
             text(
                 """
-                INSERT INTO game_sessions (session_id, scientist, question_count, questions)
-                VALUES (:session_id, :scientist, :question_count, :questions)
+                INSERT INTO game_sessions (session_id, scientist, question_count, questions, clues)
+                VALUES (:session_id, :scientist, :question_count, :questions, :clues)
                 ON CONFLICT (session_id)
                 DO UPDATE SET
                     scientist = EXCLUDED.scientist,
                     question_count = EXCLUDED.question_count,
-                    questions = EXCLUDED.questions
+                    questions = EXCLUDED.questions,
+                    clues = EXCLUDED.clues
             """
             ),
             {
@@ -65,6 +66,7 @@ def save_session(session):
                 "scientist": session["scientist"],
                 "question_count": session["question_count"],
                 "questions": json.dumps(session["questions"]),
+                "clues": session["clues"],
             },
         )
         conn.commit()
@@ -82,6 +84,7 @@ def start_game():
             "scientist": secret_scientist,
             "question_count": 0,
             "questions": [],
+            "clues": [],
         }
 
         save_session(session)
@@ -164,5 +167,44 @@ def guess_scientist(data: Guess):
             return {"result": True, "scientist": session["scientist"]}, 200
 
         return {"result": False, "scientist": session["scientist"]}, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+def give_clue(session_id: str):
+    try:
+        session = get_session(session_id)
+
+        if not session:
+            return {"error": "Invalid session"}, 404
+
+        scientist = session["scientist"]
+        clues = session["clues"] or []
+
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {
+                "role": "user",
+                "content": f"""Provide a brief clue about the scientist: {scientist}.  
+                            Keep it concise. 
+                            Do not reveal the name of the scientist. 
+                            Do not make up any facts. 
+                            The clues already given are: {', '.join(clues) if clues else 'None'}. Do not repeat any of these.
+                            Do not make it too obvious.
+                            """,
+            },
+        ]
+
+        response = client.chat.completions.create(
+            model="gpt-4.1", messages=messages, temperature=0.7
+        )
+
+        clue = response.choices[0].message.content.strip()
+        clues.append(clue)
+        session["clues"] = clues
+
+        save_session(session)
+
+        return {"clue": clue}, 200
     except Exception as e:
         return {"error": str(e)}, 500

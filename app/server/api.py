@@ -25,6 +25,7 @@ from app.langchain.awards import store_awards_file, query_awards
 from app.langchain.cinema import query_cinema
 
 from app.langchain.scientist import (
+    give_clue,
     start_game,
     ask_question,
     guess_scientist,
@@ -423,6 +424,21 @@ async def ask(params: AskQuestion):
 async def guess(params: Guess):
     try:
         data, status_code = guess_scientist(params)
+        if status_code == 200:
+            return {"data": data, "status_code": status_code}
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.get("/scientist/clue")
+async def get_clue(session_id: str):
+    try:
+        data, status_code = give_clue(session_id)
         if status_code == 200:
             return {"data": data, "status_code": status_code}
         else:
