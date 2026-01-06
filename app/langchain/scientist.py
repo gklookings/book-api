@@ -360,15 +360,24 @@ Which scientist am I thinking of? Answer with just the name.""",
 You must ask strategic yes/no questions to figure out which scientist they are thinking of.
 Ask questions that will help narrow down the possibilities efficiently.
 Only ask one question at a time.
-Make your questions clear and answerable with yes or no.""",
+Make your questions clear and answerable with yes or no.
+
+You can also make a guess if you are confident. If the user answered "yes" to your previous guess, return game_finished as true.
+If the user answered "yes" to your previous guess, return question_or_guess as thanking the user for playing and your final guess.
+
+Return your response as JSON with this format:
+{"question_or_guess": "your question or guess here", "game_finished": false}
+
+If the user answered yes to your guess, set game_finished to true.""",
             },
             {
                 "role": "user",
                 "content": f"""Question number: {session['question_count'] + 1} out of 20.
+The user answered "{answer}" to the previous question.
                 
 {questions_context}
 
-Please ask the next yes/no question to figure out which scientist I'm thinking of.""",
+Please ask the next yes/no question or make a guess if confident. Return as JSON.""",
             },
         ]
 
@@ -376,7 +385,17 @@ Please ask the next yes/no question to figure out which scientist I'm thinking o
             model="gpt-4.1", messages=messages, temperature=0.7
         )
 
-        next_question = response.choices[0].message.content.strip()
+        response_text = response.choices[0].message.content.strip()
+        print(f"AI Response: {response_text}")
+
+        # Parse JSON response
+        try:
+            response_json = json.loads(response_text)
+            next_question = response_json.get("question_or_guess", response_text)
+            game_finished = response_json.get("game_finished", False)
+        except json.JSONDecodeError:
+            next_question = response_text
+            game_finished = False
 
         # Save the next question to session
         session["questions"].append({"q": next_question, "a": None})
@@ -388,7 +407,7 @@ Please ask the next yes/no question to figure out which scientist I'm thinking o
             "question_number": session["question_count"],
             "questions_used": session["question_count"],
             "questions_left": 20 - session["question_count"],
-            "game_finished": False,
+            "game_finished": game_finished,
         }, 200
     except Exception as e:
         return {"error": str(e)}, 500
