@@ -31,6 +31,9 @@ from app.langchain.scientist import (
     guess_scientist,
     AskQuestion,
     Guess,
+    start_ai_guessing_game,
+    answer_ai_question,
+    AIGuessQuestion,
 )
 
 
@@ -439,6 +442,38 @@ async def guess(params: Guess):
 async def get_clue(session_id: str):
     try:
         data, status_code = give_clue(session_id)
+        if status_code == 200:
+            return {"data": data, "status_code": status_code}
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.get("/scientist/ai-guess/start")
+async def start_ai_guess_game():
+    """Start AI guessing game - AI asks questions to guess the scientist user is thinking of"""
+    try:
+        data, status_code = start_ai_guessing_game()
+        if status_code == 200:
+            return {"data": data, "status_code": status_code}
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+@app.post("/scientist/ai-guess/answer")
+async def answer_ai_guess(params: AIGuessQuestion):
+    """Answer AI's question and get next question or final guess"""
+    try:
+        data, status_code = answer_ai_question(params)
         if status_code == 200:
             return {"data": data, "status_code": status_code}
         else:

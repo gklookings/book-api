@@ -208,3 +208,187 @@ def give_clue(session_id: str):
         return {"clue": clue}, 200
     except Exception as e:
         return {"error": str(e)}, 500
+
+
+def start_ai_guessing_game():
+    """Start a new AI guessing game where AI tries to guess the scientist the user is thinking of."""
+    session_id = str(uuid.uuid4())
+    try:
+        session = {
+            "session_id": session_id,
+            "scientist": "AI_GUESSING_MODE",  # Placeholder to satisfy NOT NULL constraint
+            "question_count": 0,
+            "questions": [],
+            "clues": [],
+        }
+
+        save_session(session)
+
+        # Generate and return the first question immediately
+        scientists_list = ", ".join(SCIENTISTS)
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are playing a guessing game. The user is thinking of a scientist from this list:
+                
+"""
+                + scientists_list
+                + """
+
+You must ask strategic yes/no questions to figure out which scientist they are thinking of.
+Ask questions that will help narrow down the possibilities efficiently.
+Only ask one question at a time.
+Make your questions clear and answerable with yes or no.""",
+            },
+            {
+                "role": "user",
+                "content": f"""This is the first question. Please ask a yes/no question to figure out which scientist the user is thinking of.""",
+            },
+        ]
+
+        response = client.chat.completions.create(
+            model="gpt-4.1", messages=messages, temperature=0.7
+        )
+
+        first_question = response.choices[0].message.content.strip()
+
+        # Save the first question to session
+        session["questions"] = [{"q": first_question, "a": None}]
+        session["question_count"] = 1
+        save_session(session)
+
+        return {
+            "message": "AI guessing game started. Think of a scientist!",
+            "session_id": session_id,
+            "question": first_question,
+            "question_number": 1,
+            "questions_left": 19,
+        }, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+
+class AIGuessQuestion(BaseModel):
+    session_id: str
+    answer: str  # "yes" or "no"
+
+
+def answer_ai_question(data: AIGuessQuestion):
+    """Record the user's answer to the AI's question and generate next question or make final guess."""
+    try:
+        session = get_session(data.session_id)
+
+        if not session:
+            return {"error": "Invalid session"}, 404
+
+        if session["question_count"] > 20:
+            return {"error": "No more questions allowed"}, 400
+
+        # Validate answer
+        answer = data.answer.strip().lower()
+        if answer not in ["yes", "no"]:
+            return {"error": "Answer must be 'yes' or 'no'"}, 400
+
+        # Store the answer to the last question
+        questions = session["questions"] or []
+        if questions:
+            questions[-1]["a"] = answer
+
+        session["questions"] = questions
+
+        save_session(session)
+
+        # If 20 questions reached, make a guess
+        if session["question_count"] >= 20:
+            # Build context from all questions and answers
+            questions_context = ""
+            for qa in session["questions"]:
+                questions_context += f"Q: {qa['q']}\nA: {qa['a']}\n"
+
+            scientists_list = ", ".join(SCIENTISTS)
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": """You are playing a guessing game. Based on the Q&A history, you need to guess which scientist 
+the user is thinking of. Choose from the provided list of scientists. 
+Return ONLY the name of the scientist, nothing else.""",
+                },
+                {
+                    "role": "user",
+                    "content": f"""Here is the conversation history:
+
+{questions_context}
+
+Available scientists to choose from:
+{scientists_list}
+
+Which scientist am I thinking of? Answer with just the name.""",
+                },
+            ]
+
+            response = client.chat.completions.create(
+                model="gpt-4.1", messages=messages, temperature=0
+            )
+
+            guess = response.choices[0].message.content.strip()
+
+            return {
+                "message": "20 questions completed! Here's my final guess:",
+                "guess": guess,
+                "questions_used": session["question_count"],
+                "game_finished": True,
+            }, 200
+
+        # Generate next question
+        questions_context = "Previous Q&A:\n"
+        for qa in session["questions"]:
+            questions_context += f"Q: {qa['q']}\nA: {qa['a']}\n"
+
+        scientists_list = ", ".join(SCIENTISTS)
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are playing a guessing game. The user is thinking of a scientist from this list:
+                
+"""
+                + scientists_list
+                + """
+
+You must ask strategic yes/no questions to figure out which scientist they are thinking of.
+Ask questions that will help narrow down the possibilities efficiently.
+Only ask one question at a time.
+Make your questions clear and answerable with yes or no.""",
+            },
+            {
+                "role": "user",
+                "content": f"""Question number: {session['question_count'] + 1} out of 20.
+                
+{questions_context}
+
+Please ask the next yes/no question to figure out which scientist I'm thinking of.""",
+            },
+        ]
+
+        response = client.chat.completions.create(
+            model="gpt-4.1", messages=messages, temperature=0.7
+        )
+
+        next_question = response.choices[0].message.content.strip()
+
+        # Save the next question to session
+        session["questions"].append({"q": next_question, "a": None})
+        session["question_count"] += 1
+        save_session(session)
+
+        return {
+            "question": next_question,
+            "question_number": session["question_count"],
+            "questions_used": session["question_count"],
+            "questions_left": 20 - session["question_count"],
+            "game_finished": False,
+        }, 200
+    except Exception as e:
+        return {"error": str(e)}, 500
