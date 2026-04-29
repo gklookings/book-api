@@ -7,7 +7,8 @@ from app.server.auth import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
 )
 from datetime import timedelta
-from fastapi.middleware.cors import CORSMiddleware
+
+# from fastapi.middleware.cors import CORSMiddleware
 
 from app.langchain.chroma_store import store_document, query_documents
 from typing import Union
@@ -36,20 +37,19 @@ from app.langchain.scientist import (
     AIGuessQuestion,
 )
 
-
 app = FastAPI()
 
 origins = [
     "*",
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=origins,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 
 class QueryRequest(BaseModel):
