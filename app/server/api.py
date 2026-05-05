@@ -1,5 +1,4 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form
-from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from app.server.auth import (
@@ -330,37 +329,24 @@ async def create_diaralaqool_model(
 
 @app.get("/motanabi/answer")
 async def query_motanabi_model(question: str):
-    no_cache_headers = {
-        "Cache-Control": "no-store, no-cache, must-revalidate",
-        "Pragma": "no-cache",
-    }
     try:
         data, status_code = query_motanabi(question)
 
         if status_code == 200:
-            return JSONResponse(
-                content={
-                    "question": question,
-                    "answer": data["answer"],
-                    "context": data["context"],
-                    "status_code": status_code,
-                },
-                headers=no_cache_headers,
-            )
+            return {
+                "question": question,
+                "answer": data["answer"],
+                "context": data["context"],
+                "status_code": status_code,
+            }
         else:
-            return JSONResponse(
-                content={
-                    "error": data.get("error", "An error occurred"),
-                    "status_code": status_code,
-                },
-                headers=no_cache_headers,
-            )
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
     except Exception as e:
         print(f"An error occurred: {e}")
-        return JSONResponse(
-            content={"error": str(e), "status_code": 500},
-            headers=no_cache_headers,
-        )
+        return {"error": str(e), "status_code": 500}
 
 
 @app.post("/motanabi/upload")

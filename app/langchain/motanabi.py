@@ -107,7 +107,6 @@ def query_motanabi(question: str):
         )
 
         response = qa_chain.invoke(question)
-        print(question)
 
         return {
             "question": question,
