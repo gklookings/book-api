@@ -342,7 +342,7 @@ async def query_motanabi_model(question: str):
                 content={
                     "question": question,
                     "answer": data["answer"],
-                    "context": str(data["context"]),
+                    "context": data["context"],
                     "status_code": status_code,
                 },
                 headers=no_cache_headers,
