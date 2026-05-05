@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from app.server.auth import (
@@ -20,6 +21,12 @@ from app.langchain.batuta_books import store_batuta_documents, query_batuta_docu
 from app.langchain.articles import store_articles, query_articles, clean_vector_store
 
 from app.langchain.diaralaqool import store_file, query_diaralaqool
+
+from app.langchain.motanabi import (
+    store_file as store_motanabi_file,
+    query_motanabi,
+    clean_vector_store as clean_motanabi_vector_store,
+)
 
 from app.langchain.awards import store_awards_file, query_awards
 
@@ -319,6 +326,88 @@ async def create_diaralaqool_model(
         error_message = str(e)
         error_code = 500
         return {"error": error_message, "status_code": error_code}
+
+
+@app.get("/motanabi/answer")
+async def query_motanabi_model(question: str):
+    no_cache_headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+    }
+    try:
+        data, status_code = query_motanabi(question)
+
+        if status_code == 200:
+            return JSONResponse(
+                content={
+                    "question": question,
+                    "answer": data["answer"],
+                    "context": str(data["context"]),
+                    "status_code": status_code,
+                },
+                headers=no_cache_headers,
+            )
+        else:
+            return JSONResponse(
+                content={
+                    "error": data.get("error", "An error occurred"),
+                    "status_code": status_code,
+                },
+                headers=no_cache_headers,
+            )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return JSONResponse(
+            content={"error": str(e), "status_code": 500},
+            headers=no_cache_headers,
+        )
+
+
+@app.post("/motanabi/upload")
+async def create_motanabi_model(
+    file: UploadFile = Form(...),
+):
+    try:
+        if file is None:
+            raise HTTPException(
+                status_code=400, detail="The 'file' parameter is required"
+            )
+
+        data, status_code = store_motanabi_file(file)
+
+        if status_code == 200:
+            return {
+                "status": data["status"],
+                "status_code": status_code,
+            }
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        error_message = str(e)
+        error_code = 500
+        return {"error": error_message, "status_code": error_code}
+
+
+@app.post("/motanabi/clean")
+async def clean_motanabi_model():
+    try:
+        data, status_code = clean_motanabi_vector_store()
+
+        if status_code == 200:
+            return {
+                "status": data["status"],
+                "status_code": status_code,
+            }
+        else:
+            return {
+                "error": data.get("error", "An error occurred"),
+                "status_code": status_code,
+            }
+    except Exception as e:
+        return {"error": str(e), "status_code": 500}
 
 
 @app.get("/awards/answer")
