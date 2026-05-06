@@ -336,6 +336,7 @@ async def query_motanabi_model(question: str):
             return {
                 "question": question,
                 "answer": data["answer"],
+                "poemIds": data["poemIds"],
                 "context": data["context"],
                 "status_code": status_code,
             }

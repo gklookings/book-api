@@ -9,6 +9,7 @@ from langchain.prompts import PromptTemplate
 from langchain.chains.retrieval_qa.base import RetrievalQA
 from langchain.docstore.document import Document
 from fastapi import UploadFile
+import re
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -85,7 +86,10 @@ def query_motanabi(question: str):
         Only use the information from the context to answer the question.
         Your answer should be concise and relevant to the question asked.
         If the question is not related to the context, respond with "I don't know".
-
+        Important Instructions:
+        - Do not mix information from different poems.
+        - If the context contains a poemId, you MUST include it in your answer in the format [poemId: ID] for every poem or piece of information you mention.
+        
         Context:
         {context}
 
@@ -107,10 +111,17 @@ def query_motanabi(question: str):
         )
 
         response = qa_chain.invoke(question)
+        answer = response["result"]
+
+        # Extract poemIds using regex
+        poem_ids = re.findall(r"\[poemId:\s*(\w+)\]", answer)
+        # Remove poemId markers from the answer to clean it
+        cleaned_answer = re.sub(r"\[poemId:\s*\w+\]", "", answer).strip()
 
         return {
             "question": question,
-            "answer": response["result"],
+            "answer": cleaned_answer,
+            "poemIds": list(set(poem_ids)),  # Return unique poemIds
             "context": response["source_documents"],
         }, 200
     except Exception as e:
