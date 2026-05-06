@@ -67,18 +67,23 @@ def store_file(file: UploadFile):
 def query_motanabi(question: str):
     try:
         retriever = vector_store.as_retriever(
-            search_type="similarity", search_kwargs={"k": 200}
+            search_type="similarity", search_kwargs={"k": 30}
         )
 
         prompt_template = """
         You are a Conversational AI assistant that provides responses based on the given context.
         Only use the information from the context to answer the question.
-        Your answer should be concise and relevant to the question asked.
         If the question is not related to the context, respond with "I don't know".
-        Important Instructions:
-        - Do not mix information from different poems.
-        - If the context contains a poemId, you MUST include it in your answer in the format [poemId: ID] for every poem or piece of information you mention.
-        
+
+        Critical Instructions (follow exactly):
+        - ONLY return poem lines that LITERALLY and DIRECTLY mention the subject asked about in the question.
+          Do NOT include lines that are merely related to the topic or from the same poem — the line itself must contain the keyword.
+        - Do NOT mix information from different poems.
+        - You MUST reference the poemId for every line you mention using this EXACT format: [poemId: ID]
+          Example: "وَقَفتُ عَلى رَبعٍ لِمَيَّةَ" [poemId: 42]
+          NEVER use any other format such as "PoemId: 42" or "(poemId: 42)" — brackets are mandatory.
+        - If no lines in the context directly mention the subject, say "I don't know".
+
         Context:
         {context}
 
@@ -102,10 +107,10 @@ def query_motanabi(question: str):
         response = qa_chain.invoke(question)
         answer = response["result"]
 
-        # Extract poemIds using regex
-        poem_ids = re.findall(r"\[poemId:\s*(\w+)\]", answer)
+        # Extract poemIds using regex (case-insensitive to handle LLM format variations)
+        poem_ids = re.findall(r"\[poemId:\s*(\w+)\]", answer, re.IGNORECASE)
         # Remove poemId markers from the answer to clean it
-        cleaned_answer = re.sub(r"\[poemId:\s*\w+\]", "", answer).strip()
+        cleaned_answer = re.sub(r"\[poemId:\s*\w+\]", "", answer, flags=re.IGNORECASE).strip()
 
         return {
             "question": question,
