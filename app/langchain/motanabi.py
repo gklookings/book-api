@@ -76,13 +76,13 @@ def query_motanabi(question: str):
         If the question is not related to the context, respond with "I don't know".
 
         Critical Instructions (follow exactly):
-        - ONLY return poem lines that LITERALLY and DIRECTLY mention the subject asked about in the question.
-          Do NOT include lines that are merely related to the topic or from the same poem — the line itself must contain the keyword.
+        - Return poem lines that are semantically or thematically related to the subject asked about in the question.
+          This includes lines that directly mention the subject AND lines whose meaning or imagery is clearly about the topic.
         - Do NOT mix information from different poems.
         - You MUST reference the poemId for every line you mention using this EXACT format: [poemId: ID]
           Example: "وَقَفتُ عَلى رَبعٍ لِمَيَّةَ" [poemId: 42]
           NEVER use any other format such as "PoemId: 42" or "(poemId: 42)" — brackets are mandatory.
-        - If no lines in the context directly mention the subject, say "I don't know".
+        - If no lines in the context are related to the subject, say "I don't know".
 
         Context:
         {context}
