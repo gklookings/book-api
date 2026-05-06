@@ -7,7 +7,6 @@ from langchain_postgres import PGVector
 from app.langchain.components.file_extractor import extract_text_from_file
 from langchain.prompts import PromptTemplate
 from langchain.chains.retrieval_qa.base import RetrievalQA
-from langchain.docstore.document import Document
 from fastapi import UploadFile
 import re
 
@@ -47,23 +46,13 @@ def clean_vector_store():
 
 def store_file(file: UploadFile):
     try:
-        documents = []
-
         # Extract text from the uploaded file
         extracted_text = extract_text_from_file(file)
         if not extracted_text:
             return {"error": "No text extracted from the file."}, 400
 
-        # Split the text into chunks
-        for doc in extracted_text:
-            chunks = text_splitter.split_text(doc.page_content)
-
-        # Create Document objects for each chunk
-        for i, chunk in enumerate(chunks):
-            doc = Document(
-                page_content=chunk,
-            )
-            documents.append(doc)
+        # Split all documents/pages into chunks at once, preserving metadata
+        documents = text_splitter.split_documents(extracted_text)
 
         # Store documents with metadata
         print(f"Storing {len(documents)} documents in the motanabi vector store.")
