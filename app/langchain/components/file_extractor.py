@@ -4,6 +4,7 @@ from langchain_community.document_loaders import (
     PyPDFLoader,
     TextLoader,
     UnstructuredExcelLoader,
+    UnstructuredWordDocumentLoader,
 )
 from typing import Union
 import requests
@@ -28,6 +29,8 @@ def extract_text_from_file(file: Union[UploadFile, str]):
             loader = None
             if file_extension.lower() == ".docx":
                 loader = Docx2txtLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".doc":
+                loader = UnstructuredWordDocumentLoader(file_path=temp_file_path)
             elif file_extension.lower() == ".pdf":
                 loader = PyPDFLoader(file_path=temp_file_path)
             elif file_extension.lower() == ".txt":
@@ -41,7 +44,7 @@ def extract_text_from_file(file: Union[UploadFile, str]):
 
         else:
             _, file_extension = os.path.splitext(file.filename)
-            if file_extension.lower() not in [".docx", ".pdf", ".txt", ".xlsx"]:
+            if file_extension.lower() not in [".doc", ".docx", ".pdf", ".txt", ".xlsx"]:
                 raise HTTPException(status_code=400, detail="Unsupported file type")
             with tempfile.NamedTemporaryFile(
                 delete=False, suffix=file_extension
@@ -53,6 +56,8 @@ def extract_text_from_file(file: Union[UploadFile, str]):
             loader = None
             if file_extension.lower() == ".docx":
                 loader = Docx2txtLoader(file_path=temp_file_path)
+            elif file_extension.lower() == ".doc":
+                loader = UnstructuredWordDocumentLoader(file_path=temp_file_path)
             elif file_extension.lower() == ".pdf":
                 loader = PyPDFLoader(file_path=temp_file_path)
             elif file_extension.lower() == ".txt":

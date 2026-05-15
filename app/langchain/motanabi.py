@@ -7,7 +7,8 @@ from langchain_postgres import PGVector
 from app.langchain.components.file_extractor import extract_text_from_file
 from langchain.prompts import PromptTemplate
 from langchain.chains.retrieval_qa.base import RetrievalQA
-from fastapi import UploadFile
+from fastapi import UploadFile, HTTPException
+from typing import List
 import re
 
 
@@ -44,22 +45,42 @@ def clean_vector_store():
         return {"error": str(e)}, 500
 
 
-def store_file(file: UploadFile):
+def store_file(files: List[UploadFile]):
     try:
-        # Extract text from the uploaded file
-        extracted_text = extract_text_from_file(file)
-        if not extracted_text:
-            return {"error": "No text extracted from the file."}, 400
+        all_documents = []
 
-        # Split all documents/pages into chunks at once, preserving metadata
-        documents = text_splitter.split_documents(extracted_text)
+        for file in files:
+            # Extract text from each uploaded file
+            extracted_text = extract_text_from_file(file)
+            if not extracted_text:
+                print(f"Warning: No text extracted from file '{file.filename}'. Skipping.")
+                continue
 
-        # Store documents with metadata
-        print(f"Storing {len(documents)} documents in the motanabi vector store.")
-        _ = vector_store.add_documents(documents=documents)
+            # Split documents/pages into chunks, preserving metadata
+            chunks = text_splitter.split_documents(extracted_text)
+
+            # Strip NUL bytes (\x00) that Postgres rejects in string columns
+            # (common in binary-mixed or corrupted PDFs)
+            for chunk in chunks:
+                chunk.page_content = chunk.page_content.replace('\x00', '').strip()
+
+            # Drop any chunks that are empty after sanitization
+            chunks = [c for c in chunks if c.page_content]
+
+            print(f"Extracted {len(chunks)} chunks from '{file.filename}'.")
+            all_documents.extend(chunks)
+
+        if not all_documents:
+            return {"error": "No text could be extracted from any of the provided files."}, 400
+
+        # Store all documents from all files in a single call
+        print(f"Storing {len(all_documents)} total documents in the motanabi vector store.")
+        _ = vector_store.add_documents(documents=all_documents)
 
         return {"status": "success"}, 200
 
+    except HTTPException:
+        raise
     except Exception as e:
         return {"error": str(e)}, 500
 

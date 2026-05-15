@@ -352,15 +352,15 @@ async def query_motanabi_model(question: str):
 
 @app.post("/motanabi/upload")
 async def create_motanabi_model(
-    file: UploadFile = Form(...),
+    files: list[UploadFile] = Form(...),
 ):
     try:
-        if file is None:
+        if not files:
             raise HTTPException(
-                status_code=400, detail="The 'file' parameter is required"
+                status_code=400, detail="At least one file is required"
             )
 
-        data, status_code = store_motanabi_file(file)
+        data, status_code = store_motanabi_file(files)
 
         if status_code == 200:
             return {
