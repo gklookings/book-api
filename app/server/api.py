@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form, Header
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from app.server.auth import (
@@ -24,8 +24,11 @@ from app.langchain.diaralaqool import store_file, query_diaralaqool
 from app.langchain.motanabi import (
     store_file as store_motanabi_file,
     query_motanabi,
+    query_motanabi_with_context,
     clean_vector_store as clean_motanabi_vector_store,
 )
+
+from app.memory import service as memory_service
 
 from app.langchain.awards import store_awards_file, query_awards
 
@@ -328,23 +331,72 @@ async def create_diaralaqool_model(
 
 
 @app.get("/motanabi/answer")
-async def query_motanabi_model(question: str):
-    try:
-        data, status_code = query_motanabi(question)
+async def query_motanabi_model(
+    question: str,
+    sessiontoken: str | None = Header(default=None),
+):
+    """
+    Query the Al-Mutanabbi poetry vector store.
 
-        if status_code == 200:
+    - Without Sessiontoken: uses the original stateless query_motanabi()
+      (proven, unchanged code path).
+    - With Sessiontoken: loads memory, injects conversation history via
+      query_motanabi_with_context(), and persists the exchange.
+    """
+    try:
+        domain = "motanabi"
+
+        # ── Stateless path (no session token) ────────────────────────────────
+        if not sessiontoken:
+            data, status_code = query_motanabi(question)
+            if status_code != 200:
+                return {
+                    "error": data.get("error", "An error occurred"),
+                    "status_code": status_code,
+                }
             return {
                 "question": question,
                 "answer": data["answer"],
                 "poemIds": data["poemIds"],
                 "context": data["context"],
+                "domain": domain,
+                "hasMemory": False,
                 "status_code": status_code,
             }
-        else:
+
+        # ── Memory path (session token present) ───────────────────────────────
+        conversation_history = memory_service.load_context(
+            session_token=sessiontoken,
+            domain=domain,
+        )
+
+        data, status_code = query_motanabi_with_context(
+            question=question,
+            conversation_history=conversation_history,
+        )
+
+        if status_code != 200:
             return {
                 "error": data.get("error", "An error occurred"),
                 "status_code": status_code,
             }
+
+        memory_service.save_exchange(
+            session_token=sessiontoken,
+            domain=domain,
+            question=question,
+            answer=data["answer"],
+        )
+
+        return {
+            "question": question,
+            "answer": data["answer"],
+            "poemIds": data["poemIds"],
+            "context": data["context"],
+            "domain": domain,
+            "hasMemory": True,
+            "status_code": status_code,
+        }
     except Exception as e:
         print(f"An error occurred: {e}")
         return {"error": str(e), "status_code": 500}
