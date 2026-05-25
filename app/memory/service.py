@@ -64,6 +64,28 @@ def load_context(session_token: str, domain: str) -> str:
     return "\n".join(parts)
 
 
+def clear_session(session_token: str, domain: str) -> dict:
+    """
+    Wipe all memory for a session+domain (called when user starts a new chat).
+
+    Deletes:
+      - The user_memory row (rolling window + summary)
+      - All chat_history rows for that session+domain
+
+    Returns a dict with the number of rows deleted from each table.
+    """
+    if not session_token:
+        return {"memory_deleted": 0, "history_deleted": 0}
+
+    memory_deleted = repository.delete_memory(session_token, domain)
+    history_deleted = repository.delete_chat_history(session_token, domain)
+
+    return {
+        "memory_deleted": memory_deleted,
+        "history_deleted": history_deleted,
+    }
+
+
 def save_exchange(
     session_token: str,
     domain: str,

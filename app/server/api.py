@@ -449,6 +449,54 @@ async def clean_motanabi_model():
         return {"error": str(e), "status_code": 500}
 
 
+@app.delete("/memory")
+async def clear_memory(
+    domain: str = "motanabi",
+    sessiontoken: str | None = Header(default=None),
+):
+    """
+    Clear the memory (rolling window + full history) for a session + domain.
+
+    Call this when the user starts a new chat so the next conversation
+    begins with a clean slate.
+
+    Headers:
+        Sessiontoken: <token>   (required)
+
+    Query params:
+        domain: str             (default: "motanabi")
+
+    Response:
+        {
+          "status": "cleared",
+          "session_token": "...",
+          "domain": "...",
+          "memory_deleted": 1,
+          "history_deleted": 12
+        }
+    """
+    if not sessiontoken:
+        raise HTTPException(
+            status_code=400,
+            detail="Sessiontoken header is required to clear memory.",
+        )
+
+    try:
+        result = memory_service.clear_session(
+            session_token=sessiontoken,
+            domain=domain,
+        )
+        return {
+            "status": "cleared",
+            "session_token": sessiontoken,
+            "domain": domain,
+            "memory_deleted": result["memory_deleted"],
+            "history_deleted": result["history_deleted"],
+        }
+    except Exception as e:
+        return {"error": str(e), "status_code": 500}
+
+
 @app.get("/awards/answer")
 async def query_awards_model(question: str):
     try:
