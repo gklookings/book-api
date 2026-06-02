@@ -113,101 +113,14 @@ def _augment_query_for_retrieval(question: str) -> str:
 
 
 def query_motanabi(question: str):
-    try:
-        retrieval_query = _augment_query_for_retrieval(question)
-
-        retriever = vector_store.as_retriever(
-            search_type="similarity", search_kwargs={"k": 30}
-        )
-        source_documents = retriever.invoke(retrieval_query)
-
-        # Build context: extract poemId from source filename (e.g. mot149.txt → 149)
-        # and prepend as a guaranteed header so the LLM always knows the poemId,
-        # even for continuation chunks that lack the "poemId is  X" header text.
-        def _pid_from_doc(doc) -> str:
-            src = doc.metadata.get("source", "")
-            m = re.search(r"mot(\d+)", src)
-            return m.group(1) if m else "unknown"
-
-        context_text = "\n\n---\n\n".join(
-            f"[POEM ID: {_pid_from_doc(doc)}]\n{doc.page_content}"
-            for doc in source_documents
-        )
-
-        prompt_template = """
-        You are an expert in Classical Arabic poetry, specialising in Al-Mutanabbi's diwan.
-        The context below contains excerpts from Al-Mutanabbi's poems written in Classical Arabic.
-        Each excerpt starts with [POEM ID: X] — this is the poemId for ALL lines in that excerpt.
-        Your job: find every individual poem LINE that mentions the topic in the question.
-
-        Rules (must follow exactly):
-        1. Scan every numbered line (e.g. "1 | ...", "2 | ...") in every excerpt in the context.
-        2. Identify the Arabic word(s) for the topic. For example:
-             - "horses" → look for: خيل، جياد، أفراس، فرس، طرف، مهر
-             - "sword"  → look for: سيف، صارم، حسام
-             - "sea"    → look for: بحر، يم، موج
-           Do the same Arabic-word lookup for any other topic.
-        3. Return a line if and only if:
-             a) It contains one of those Arabic words, OR
-             b) Its entire meaning is unmistakably and primarily about the topic.
-           Do NOT return a line just because it is in the same poem.
-        4. For EVERY matching line, tag it using the [POEM ID: X] of the excerpt it came from:
-             "<line text>" [poemId: X]
-           NEVER write [poemId: Unknown]. The [POEM ID: X] header is ALWAYS present and gives you the ID.
-           NEVER omit the tag. NEVER use any other bracket style.
-        5. If you cannot find any matching lines after scanning all excerpts, respond in English only:
-             "No related verses were found in the collection for this topic."
-        6. Do NOT make up or modify any poem lines. Copy them exactly as written.
-
-        Context:
-        {context}
-
-        Question:
-        {question}
-        """
-
-        chat_prompt = PromptTemplate(
-            input_variables=["context", "question"], template=prompt_template
-        )
-
-        chain = chat_prompt | llm
-        response_msg = chain.invoke({"context": context_text, "question": question})
-        answer = response_msg.content
-
-        # Extract poemIds, filter out any "unknown" that slipped through
-        poem_ids = re.findall(r"\[poemId:\s*(\w+)\]", answer, re.IGNORECASE)
-        poem_ids = [pid for pid in poem_ids if pid.lower() != "unknown"]
-        cleaned_answer = re.sub(r"\[poemId:\s*\w+\]", "", answer, flags=re.IGNORECASE).strip()
-
-        return {
-            "question": question,
-            "answer": cleaned_answer,
-            "poemIds": list(set(poem_ids)),
-            "context": source_documents,
-        }, 200
-    except Exception as e:
-        return {"error": str(e)}, 500
+    return _query_motanabi_core(question)
 
 
 def query_motanabi_with_context(question: str, conversation_history: str):
-    """
-    Memory-aware variant of query_motanabi.
+    return _query_motanabi_core(question, conversation_history)
 
-    When conversation history is present, the follow-up question is first
-    rewritten into a self-contained standalone query so the vector retriever
-    can find the right documents even for vague follow-ups like
-    "any other poems?" or "tell me more".
 
-    The retrieval query is also augmented with Arabic terms for better
-    cross-lingual semantic matching.
-
-    Args:
-        question:             The user's current question.
-        conversation_history: Pre-formatted history string (may be empty)
-
-    Returns:
-        (dict, int) — same shape as query_motanabi().
-    """
+def _query_motanabi_core(question: str, conversation_history: str = None):
     try:
         # ── Step 1: Build retrieval query ───────────────────────────────────────
         if conversation_history:
@@ -222,10 +135,21 @@ def query_motanabi_with_context(question: str, conversation_history: str):
         retriever = vector_store.as_retriever(
             search_type="similarity", search_kwargs={"k": 30}
         )
-        source_docs = retriever.invoke(retrieval_query)
+        source_documents = retriever.invoke(retrieval_query)
 
         # ── Step 3: Build context string from retrieved docs ──────────────────
-        context_text = "\n\n".join(doc.page_content for doc in source_docs)
+        # Build context: extract poemId from source filename (e.g. mot149.txt → 149)
+        # and prepend as a guaranteed header so the LLM always knows the poemId,
+        # even for continuation chunks that lack the "poemId is  X" header text.
+        def _pid_from_doc(doc) -> str:
+            src = doc.metadata.get("source", "")
+            m = re.search(r"mot(\d+)", src)
+            return m.group(1) if m else "unknown"
+
+        context_text = "\n\n---\n\n".join(
+            f"[POEM ID: {_pid_from_doc(doc)}]\n{doc.page_content}"
+            for doc in source_documents
+        )
 
         # ── Step 4: Build the final prompt (history + context + question) ────────
         history_section = (
@@ -236,27 +160,38 @@ def query_motanabi_with_context(question: str, conversation_history: str):
 
         prompt_template = f"""
         You are an expert in Classical Arabic poetry, specialising in Al-Mutanabbi's diwan.
+        You are also a friendly, conversational assistant.
         The context below contains excerpts from Al-Mutanabbi's poems written in Classical Arabic.
-        Your job: find every individual poem LINE that mentions the topic in the question.{history_section}
+        Each excerpt starts with [POEM ID: X] — this is the poemId for ALL lines in that excerpt.
+        {{history_section}}
 
-        Rules (must follow exactly):
-        1. Scan every numbered line (e.g. "1 | ...", "2 | ...") in every poem in the context.
+        First, decide what type of question this is (do NOT output the type/category prefix letter like "A)", "B)", "C)" or "Type A:" in your final response - just output the response content itself):
+        A) GREETING / SMALL TALK (e.g. "Hello", "Hi", "How are you?", "Thank you") —
+           Respond warmly and naturally in English. Do NOT mention poems or verses.
+        B) FACTUAL QUESTION ABOUT AL-MUTANABBI (birth, death, biography, style, etc.) —
+           Answer directly and concisely using information from the context.
+           Do NOT start with "According to the provided context" or any similar preamble.
+        C) POEM/VERSE SEARCH (asking for poem lines about a topic) —
+           Follow the rules below to find and return matching lines.
+
+        Rules for TYPE C only (must follow exactly):
+        1. Scan every numbered line (e.g. "1 | ...", "2 | ...") in every excerpt in the context.
         2. Identify the Arabic word(s) for the topic. For example:
-               - "horses" → look for: خيل، جياد، أفراس، فرس، طرف، مهر
-               - "sword"  → look for: سيف، صارم، حسام
-               - "sea"    → look for: بحر، يم، موج
-             Do the same Arabic-word lookup for any other topic.
+             - "horses" → look for: خيل، جياد، أفراس، فرس، طرف، مهر
+             - "sword"  → look for: سيف، صارم، حسام
+             - "sea"    → look for: بحر، يم، موج
+           Do the same Arabic-word lookup for any other topic.
         3. Return a line if and only if:
-               a) It contains one of those Arabic words, OR
-               b) Its entire meaning is unmistakably and primarily about the topic.
-             Do NOT return a line just because it is in the same poem.
-        4. For EVERY line you return, append the poemId tag in exactly this format:
-               "<line text>" [poemId: <ID>]
-             The poemId is given at the start of each poem excerpt as "poemId is  <ID>".
-             NEVER omit the poemId tag. NEVER use any other bracket or format.
-        5. Do NOT repeat lines that already appear in the Conversation History above.
-        6. If you cannot find any matching lines after scanning all lines, respond in English:
-               "No related verses were found in the collection for this topic."
+             a) It contains one of those Arabic words, OR
+             b) Its entire meaning is unmistakably and primarily about the topic.
+           Do NOT return a line just because it is in the same poem.
+        4. For EVERY matching line, tag it using the [POEM ID: X] of the excerpt it came from:
+             "<line text>" [poemId: X]
+           NEVER write [poemId: Unknown]. The [POEM ID: X] header is ALWAYS present and gives you the ID.
+           NEVER omit the tag. NEVER use any other bracket style.
+        5. Do NOT repeat lines that already appear in the Conversation History (if provided above).
+        6. If you cannot find any matching lines after scanning all excerpts, respond in English only:
+             "No related verses were found in the collection for this topic."
         7. Do NOT make up or modify any poem lines. Copy them exactly as written.
 
         Context:
@@ -266,28 +201,41 @@ def query_motanabi_with_context(question: str, conversation_history: str):
         {{question}}
         """
 
-        chat_prompt = PromptTemplate(
-            input_variables=["context", "question"], template=prompt_template
+        # Format history_section dynamic token
+        formatted_prompt = prompt_template.format(
+            history_section=history_section,
+            context="{context}",
+            question="{question}"
         )
 
-        # ── Step 5: LLM inference with pre-retrieved docs ───────────────────
-        # We pass the original question to the LLM (not the rewritten one)
-        # so the answer reads naturally.
+        chat_prompt = PromptTemplate(
+            input_variables=["context", "question"], template=formatted_prompt
+        )
+
+        # ── Step 5: LLM inference ──────────────────────────────────────────
         chain = chat_prompt | llm
         response_msg = chain.invoke({"context": context_text, "question": question})
         answer = response_msg.content
 
         # ── Step 6: Extract and clean poemIds ────────────────────────────────
+        # Extract poemIds, filter out any "unknown" that slipped through
         poem_ids = re.findall(r"\[poemId:\s*(\w+)\]", answer, re.IGNORECASE)
+        poem_ids = [pid for pid in poem_ids if pid.lower() != "unknown"]
+        cleaned_answer = re.sub(r"\[poemId:\s*\w+\]", "", answer, flags=re.IGNORECASE).strip()
+
+        # Remove any category prefix like "A) ", "B) ", "Category A:", "Type A - " etc.
         cleaned_answer = re.sub(
-            r"\[poemId:\s*\w+\]", "", answer, flags=re.IGNORECASE
+            r"^(?:Type\s+[A-C]\s*[-:]*|[A-C]\s*[-)]\s*|Category\s+[A-C]:\s*)",
+            "",
+            cleaned_answer,
+            flags=re.IGNORECASE
         ).strip()
 
         return {
             "question": question,
             "answer": cleaned_answer,
             "poemIds": list(set(poem_ids)),
-            "context": source_docs,
+            "context": source_documents,
         }, 200
     except Exception as e:
         return {"error": str(e)}, 500
