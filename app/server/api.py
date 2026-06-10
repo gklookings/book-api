@@ -1,5 +1,9 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form, Header
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, Form, Header, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
+import asyncio
 from pydantic import BaseModel
 from app.server.auth import (
     authenticate_user,
@@ -26,6 +30,7 @@ from app.langchain.motanabi import (
     query_motanabi,
     query_motanabi_with_context,
     clean_vector_store as clean_motanabi_vector_store,
+    fetch_book_pages,
 )
 
 from app.memory import service as memory_service
@@ -447,6 +452,30 @@ async def clean_motanabi_model():
             }
     except Exception as e:
         return {"error": str(e), "status_code": 500}
+
+
+@app.get("/motanabi/book-pages")
+async def get_motanabi_book_pages(
+    bookId: str,
+    language: str,
+):
+    """
+    Fetch book pages from Alwaraq and store into the vector store.
+    Returns 202 immediately — ingestion runs in a background thread.
+    The heavy sync work (embeddings + DB writes) runs in a thread pool
+    so it does NOT block FastAPI's event loop.
+    Check the server console for the upload summary once complete.
+    """
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, fetch_book_pages, bookId, language)
+    return {
+        "status": "processing",
+        "message": f"Book pages for bookId={bookId} are being fetched and stored in the background. Check server console for the upload summary.",
+        "bookId": bookId,
+        "language": language,
+        "status_code": 202,
+    }
+
 
 
 @app.delete("/memory")

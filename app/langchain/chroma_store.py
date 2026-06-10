@@ -21,7 +21,8 @@ import ast
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.schema import Document
 from langchain.chat_models import init_chat_model
-
+from dotenv import load_dotenv
+load_dotenv()
 
 llm = init_chat_model("gpt-4o-mini", model_provider="openai")
 
@@ -29,7 +30,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 user = os.getenv("POSTGRES_USER")
 password = os.getenv("POSTGRES_PASSWORD")
 
-load_dotenv()
 
 embedding_model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
 sentence_transformer_ef = SentenceTransformer(embedding_model)
