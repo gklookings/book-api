@@ -175,31 +175,30 @@ def store_text_content(text: str, source_name: str, extra_metadata: dict = None)
 
 def _augment_query_for_retrieval(question: str) -> str:
     """
-    Translate an English question into a bilingual (English + Arabic) retrieval
-    query so the multilingual embedding model can find the most relevant Arabic
-    poem chunks.
-
-    If the question mentions a specific poem title (transliterated or in English),
-    the Arabic form of that title is included so the retriever can match it.
+    Convert a question (in Arabic OR English) into a bilingual (English + Arabic)
+    retrieval query so the multilingual embedding model can find the most relevant
+    Arabic poem chunks regardless of the question language.
 
     Examples:
         "bring the poem lines that talk about the horses"
         → "horses خيل جياد أفراس فرس Al-Mutanabbi poems about horses"
 
-        "Who is praised in the poem Awadhil Dhat al-Khal fi Hawasid?"
-        → "أواذل ذات الخال في حواسد Al-Mutanabbi ممدوح قصيدة"
+        "في أي سنة ماتت أم سيف الدولة وما هي القصيدة التي رثاها المتنبي بها"
+        → "وفاة أم سيف الدولة رثاء المتنبي قصيدة رثاء death elegy Al-Mutanabbi"
     """
     prompt = (
         "You are a bilingual Arabic-English search query specialist.\n"
-        "Given an English question about Al-Mutanabbi poetry, output a SHORT retrieval "
-        "query that includes:\n"
-        "  1. If the question mentions a SPECIFIC POEM TITLE (transliterated or in English), "
-        "include BOTH the transliterated title AND its Arabic equivalent as the first priority.\n"
-        "  2. The key topic and constraint keywords in English (especially temporal/order constraints like 'first', 'earliest', 'last', 'most famous', 'birth', 'death').\n"
-        "  3. The Arabic words / synonyms for that topic and constraints (space-separated, e.g. 'أول', 'أقدم', 'آخر', 'أشهر', 'وفاة', 'ولادة').\n"
-        "  4. A short Arabic phrase like 'شعر المتنبي عن [topic]' or 'قصيدة المتنبي [title]'.\n"
+        "The question below may be written in Arabic OR in English — handle both equally.\n"
+        "Your task: output a SHORT bilingual retrieval query that includes:\n"
+        "  1. If the question mentions a SPECIFIC POEM TITLE (in Arabic, transliterated, or in English), "
+        "include the Arabic title as the first priority.\n"
+        "  2. The key topic and constraint keywords in BOTH Arabic and English "
+        "(especially temporal/order constraints like 'first/أول', 'last/آخر', 'death/وفاة', 'birth/ولادة', "
+        "'elegy/رثاء', 'praise/مدح', 'most famous/أشهر').\n"
+        "  3. Arabic synonyms and related words for the topic (space-separated).\n"
+        "  4. A short descriptive Arabic phrase like 'رثاء المتنبي لـ[person]' or 'قصيدة المتنبي عن [topic]'.\n"
         "Output ONLY the query string, no explanation.\n\n"
-        f"English question: {question}\n"
+        f"Question: {question}\n"
         "Bilingual retrieval query:"
     )
     response = llm.invoke(prompt)
@@ -218,20 +217,27 @@ def query_motanabi_with_context(question: str, conversation_history: str):
 
 def _extract_arabic_keywords(question: str) -> list[str]:
     """
-    Ask the LLM to extract key Arabic words/phrases from an English question
-    (including poem titles mentioned in transliterated form).
+    Ask the LLM to extract key Arabic words/phrases from a question written
+    in Arabic OR English (including poem titles in transliterated form).
     Returns a list of Arabic strings to use as SQL ILIKE search terms.
     """
     prompt = (
-        "You are an Arabic-English translation specialist.\n"
-        "Given an English question about Al-Mutanabbi poetry, extract:\n"
-        "  1. Any poem title mentioned (in its Arabic form, even if given as transliteration).\n"
+        "You are an Arabic-English specialist for Al-Mutanabbi poetry.\n"
+        "The question below may be written in Arabic OR in English — handle both equally.\n"
+        "Extract from the question:\n"
+        "  1. Any poem title mentioned (return it in its Arabic form, even if given as transliteration or in English).\n"
         "  2. Key Arabic content words, synonyms, or phrases relevant to the question.\n"
-        "  3. If a verse is quoted or translated, include both the translated phrase AND its individual core words and synonyms (e.g., if 'weep' is mentioned, include both 'نبكي' and 'أبكي'; if 'dead' is mentioned, include 'موتانا', 'موتى', 'أموات').\n"
-        "  4. Crucial question constraints such as order, frequency, or superlative terms (e.g., 'first' -> 'أول', 'last' -> 'آخر', 'most famous' -> 'أشهر', 'earliest' -> 'أقدم').\n"
-        "  5. If the question asks about a specific relationship, event, or fact, extract a full descriptive Arabic search phrase representing that (e.g., 'أول قصيدة مدح بها سيف الدولة' or 'وفاة المتنبي في الكوفة'). This is highly critical for matching book passages.\n"
+        "  3. If a verse is quoted or translated, include both the phrase AND its individual core words and synonyms "
+        "(e.g., if 'weep' / 'نبكي' is mentioned, include 'نبكي', 'أبكي', 'بكاء'; if 'dead' / 'موتى' is mentioned, include 'موتانا', 'موتى', 'أموات').\n"
+        "  4. Temporal/order/superlative constraints in Arabic (e.g., 'first' / 'أول' -> 'أول', 'أقدم'; 'last' / 'آخر' -> 'آخر'; 'most famous' / 'أشهر' -> 'أشهر'; 'death' / 'وفاة' -> 'وفاة', 'مات', 'توفي').\n"
+        "  5. SYNONYM EXPANSION — always expand these common synonyms:\n"
+        "     - 'أم' (mother) → also include 'والدة' (they are synonyms; the source text may use either).\n"
+        "     - 'رثى / رثاء' (elegy) → also include 'يرثي', 'مرثية', 'رثاها'.\n"
+        "     - 'مات / وفاة' (death) → also include 'توفي', 'ماتت', 'وفاتها'.\n"
+        "  6. If the question asks about a specific relationship, event, person, or fact, extract a full descriptive Arabic search phrase for it "
+        "(e.g., 'والدة سيف الدولة', 'وفاة أم سيف الدولة', 'رثاء المتنبي لأم سيف الدولة', 'أول قصيدة مدح بها سيف الدولة'). This is highly critical for matching book passages.\n"
         "Output ONLY a JSON array of Arabic strings (no explanation), e.g.:\n"
-        '  ["عواذل ذات الخال", "حواسد", "سيف الدولة", "نبكي", "موتانا", "موتى"]\n\n'
+        '  ["أم سيف الدولة", "والدة سيف الدولة", "وفاة", "رثاء", "مات", "توفي", "يرثي"]\n\n'
         f"Question: {question}\n"
         "Arabic keywords JSON array:"
     )
@@ -415,11 +421,11 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
            Respond warmly and naturally in the detected language (Arabic if the question is in Arabic, English otherwise). Do NOT mention poems or verses.
         B) FACTUAL QUESTIONS ABOUT AL-MUTANABBI, HIS POEMS, OR SPECIFIC LINES/VERSES
            (e.g., biography, style, completing or explaining a specific verse, identifying who is praised in a specific poem or line, etc.) —
-           1. Look in the retrieved material for matching lines, poem headers, or details. Answer the question directly and concisely in the detected language (Arabic if the question is in Arabic, English otherwise), using the facts.
+           1. Scan ALL retrieved material carefully for the answer. Answer directly and concisely in the detected language using what you find. Facts may be stated in Arabic prose, in Arabic numerals, or as Arabic number-words (e.g., "سبع وثلاثين وثلاثمائة" = 337 AH) — read them all and summarize accurately.
            2. If the question quotes a verse in English translation (e.g., "We weep for our dead against our will"), translate it mentally to identify the matching Arabic line, then output the next line or lines from the same poem in Arabic (copying them exactly as written).
            3. If the question is in English but refers to events, relationships, or first poems (e.g., "first poem praising Sayf al-Dawla"), scan the Arabic material for relevant mentions (e.g., references to first contact "أول اتصاله به" or first recitation/poetry "أول ما أنشده" / "أول شعر") and answer the question in English, quoting the poem's opening line (e.g., "وفاؤكما كالربع أشجاه طاسمه") or title in Arabic.
            4. Do NOT mention the word "context" (such as "provided context", "according to the context", "based on the context", etc.) anywhere in your response. Simply state the answer directly based on the facts.
-           5. If you cannot find the specific verse or poem, state clearly that it could not be found (e.g., "The specific verse/poem could not be found"), without using the word "context".
+           5. No hallucination rule: Only report facts that are present in the retrieved material. Do NOT invent, guess, or estimate specific dates, years, poem titles, verses, or names that are not found anywhere in the retrieved material. If after scanning ALL retrieved material the specific fact is genuinely absent, say so clearly in the detected language (e.g., "لم تُذكر هذه المعلومة في المادة المتوفرة." or "This information was not found in the available material.") — but only say this as a last resort after a thorough scan.
         C) POEM/VERSE SEARCH (asking for poem lines about a topic) —
            Follow the rules below to find and return matching lines.
 
