@@ -265,26 +265,49 @@ def _sql_keyword_search(keywords: list[str], limit: int = 10) -> list[Document]:
     """
     if not keywords:
         return []
-    
+
     # Exclude common stop words/broad search terms that match almost all documents
     stop_words = {
         'مدح', 'شعر', 'قصيدة', 'ديوان', 'المتنبي', 'أبو الطيب', 'موضوع', 'سيف الدولة',
         'كافور', 'ممدوح', 'ابن', 'في', 'من', 'على', 'عن', 'إلى', 'مع', 'أو', 'أن', 'لا'
     }
-    
+
+    # Hardcoded Arabic synonym expansions — deterministic, no LLM dependency.
+    # If a word appears in extracted keywords, its synonyms are also searched.
+    SYNONYM_MAP: dict[str, list[str]] = {
+        'أم':      ['والدة'],
+        'والدة':   ['أم'],
+        'رثاء':    ['يرثي', 'مرثية', 'رثاها'],
+        'يرثي':    ['رثاء', 'مرثية', 'رثاها'],
+        'مرثية':   ['رثاء', 'يرثي'],
+        'رثاها':   ['رثاء', 'يرثي', 'مرثية'],
+        'وفاة':    ['ماتت', 'توفي', 'توفيت', 'مات'],
+        'ماتت':    ['وفاة', 'توفيت'],
+        'مات':     ['وفاة', 'توفي'],
+        'توفي':    ['وفاة', 'ماتت', 'توفيت'],
+        'توفيت':   ['وفاة', 'ماتت'],
+        'أخت':     ['أخته'],
+        'أخته':    ['أخت'],
+    }
+
     expanded_keywords = []
     for kw in keywords:
         kw_clean = kw.strip()
         if kw_clean and len(kw_clean) > 1 and kw_clean not in stop_words:
             expanded_keywords.append(kw_clean)
-        # Split multi-word phrases into individual words to handle spelling/preposition differences (e.g., نبكي لموتانا vs نبكي على موتانا)
-        words = re.findall(r'\w+', kw)
-        for w in words:
+            # Apply synonym expansion for individual words found in this multi-word keyword
+            for word in re.findall(r'\w+', kw_clean):
+                for syn in SYNONYM_MAP.get(word, []):
+                    expanded_keywords.append(syn)
+        # Also split multi-word phrases into individual words
+        for w in re.findall(r'\w+', kw):
             w_clean = w.strip()
             if w_clean and len(w_clean) > 1 and w_clean not in stop_words:
                 expanded_keywords.append(w_clean)
-                
-    # Deduplicate while preserving order (original phrases first, then individual words)
+                for syn in SYNONYM_MAP.get(w_clean, []):
+                    expanded_keywords.append(syn)
+
+    # Deduplicate while preserving order
     seen = set()
     filtered_keywords = []
     for kw in expanded_keywords:
@@ -349,6 +372,69 @@ def _sql_keyword_search(keywords: list[str], limit: int = 10) -> list[Document]:
         return []
 
 
+def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Document]:
+    """
+    Search ONLY in poemsTxtFile source chunks using multi-word phrase keywords.
+    Poem header chunks contain the structured description: poemId, title,
+    occasion/year the poem was composed, and the opening lines.
+    These are the most authoritative source for factual questions (year, title, etc.).
+
+    We ONLY use multi-word phrases (e.g. "والدة سيف الدولة") rather than single words
+    (e.g. "وفاة") because single words match hundreds of poem headers and introduce
+    noise. Multi-word phrases are specific enough to pinpoint the exact poem.
+    Results are prepended first in the LLM context so factual details are seen first.
+    """
+    if not keywords:
+        return []
+
+    # Prefer multi-word phrases (contain a space) as they are far more specific.
+    # Fall back to long single words (>4 chars) only if no phrases are available.
+    phrase_terms = [kw.strip() for kw in keywords if ' ' in kw.strip() and len(kw.strip()) > 3]
+    fallback_terms = [kw.strip() for kw in keywords if ' ' not in kw.strip() and len(kw.strip()) > 4]
+
+    search_terms = phrase_terms if phrase_terms else fallback_terms
+    if not search_terms:
+        return []
+
+    try:
+        conn = psycopg2.connect(_PG_DSN)
+        cur = conn.cursor()
+
+        conditions = " OR ".join(["e.document ILIKE %s" for _ in search_terms])
+        params = [f"%{kw}%" for kw in search_terms] + [limit * 2]
+
+        cur.execute(f"""
+            SELECT e.document, e.cmetadata
+            FROM langchain_pg_embedding e
+            JOIN langchain_pg_collection c ON c.uuid = e.collection_id
+            WHERE c.name = 'motanabi'
+              AND e.cmetadata->>'source' LIKE 'poemsTxtFile%%'
+              AND ({conditions})
+            ORDER BY e.id ASC
+            LIMIT %s;
+        """, params)
+
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        docs = []
+        seen = set()
+        for row in rows:
+            if len(docs) >= limit:
+                break
+            content = row[0]
+            key = content[:100]
+            if key not in seen:
+                docs.append(Document(page_content=content, metadata=row[1] or {}))
+                seen.add(key)
+
+        print(f"[motanabi] Poem header search returned {len(docs)} chunk(s) from poemsTxtFile "
+              f"(using {'phrases' if phrase_terms else 'keywords'}: {search_terms[:3]})")
+        return docs
+    except Exception as e:
+        print(f"[motanabi] Warning: Poem header search failed: {e}")
+        return []
 
 
 def _query_motanabi_core(question: str, conversation_history: str = None):
@@ -374,12 +460,22 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
         # Extract Arabic keywords and do a direct ILIKE search, then merge.
         arabic_keywords = _extract_arabic_keywords(question)
         if arabic_keywords:
-            sql_docs = _sql_keyword_search(arabic_keywords, limit=10)
-            # Deduplicate: add SQL docs whose content isn't already in source_documents
+            # Step 2b-i: Poem header search (HIGHEST PRIORITY)
+            # poemsTxtFile chunks contain structured year/title/description — they
+            # are the single most authoritative source for factual questions.
+            # Insert them first so the LLM sees them before any other content.
+            poem_header_docs = _sql_poem_header_search(arabic_keywords, limit=5)
             existing_contents = {d.page_content[:100] for d in source_documents}
+            for doc in reversed(poem_header_docs):  # reversed so first result ends up at index 0
+                if doc.page_content[:100] not in existing_contents:
+                    source_documents.insert(0, doc)
+                    existing_contents.add(doc.page_content[:100])
+
+            # Step 2b-ii: Regular SQL keyword fallback (alwaraq + all sources)
+            sql_docs = _sql_keyword_search(arabic_keywords, limit=10)
             for doc in sql_docs:
                 if doc.page_content[:100] not in existing_contents:
-                    source_documents.insert(0, doc)  # prepend so LLM sees them first
+                    source_documents.insert(len(poem_header_docs), doc)  # after poem headers
                     existing_contents.add(doc.page_content[:100])
 
         # ── Step 3: Build context string from retrieved docs ──────────────────
@@ -426,6 +522,7 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
            3. If the question is in English but refers to events, relationships, or first poems (e.g., "first poem praising Sayf al-Dawla"), scan the Arabic material for relevant mentions (e.g., references to first contact "أول اتصاله به" or first recitation/poetry "أول ما أنشده" / "أول شعر") and answer the question in English, quoting the poem's opening line (e.g., "وفاؤكما كالربع أشجاه طاسمه") or title in Arabic.
            4. Do NOT mention the word "context" (such as "provided context", "according to the context", "based on the context", etc.) anywhere in your response. Simply state the answer directly based on the facts.
            5. No hallucination rule: Only report facts that are present in the retrieved material. Do NOT invent, guess, or estimate specific dates, years, poem titles, verses, or names that are not found anywhere in the retrieved material. If after scanning ALL retrieved material the specific fact is genuinely absent, say so clearly in the detected language (e.g., "لم تُذكر هذه المعلومة في المادة المتوفرة." or "This information was not found in the available material.") — but only say this as a last resort after a thorough scan.
+           6. PRECISION rule — match the EXACT person/subject asked about: The retrieved material may contain facts about MULTIPLE people (e.g., Sayf al-Dawla's mother أم AND his sister أخت, or different poets, or different events). You MUST match the date, poem, or fact ONLY to the specific person or subject the question is asking about. For example, if the question asks about the MOTHER (أم / والدة), use ONLY dates and poems from chunks that explicitly describe the mother — ignore any dates or poems in chunks about the sister (أخت) or any other person.
         C) POEM/VERSE SEARCH (asking for poem lines about a topic) —
            Follow the rules below to find and return matching lines.
 
