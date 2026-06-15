@@ -404,12 +404,18 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
         Each excerpt starts with [POEM ID: X] — this is the poemId for ALL lines in that excerpt.
         {{history_section}}
 
+        IMPORTANT — Language rule (apply ALWAYS, for every response type):
+        - Detect the language of the Question below.
+        - If the Question is written in Arabic, you MUST respond entirely in Arabic for all parts of your answer (greetings, explanations, poem lines, everything).
+        - If the Question is written in English, respond in English (poem lines may still be quoted in their original Arabic).
+        - Never mix the response language; be consistent throughout.
+
         First, decide what type of question this is (do NOT output the type/category prefix letter like "A)", "B)", "C)" or "Type A:" in your final response - just output the response content itself):
-        A) GREETING / SMALL TALK (e.g. "Hello", "Hi", "How are you?", "Thank you") —
-           Respond warmly and naturally in English. Do NOT mention poems or verses.
+        A) GREETING / SMALL TALK (e.g. "Hello", "Hi", "How are you?", "Thank you", or their Arabic equivalents) —
+           Respond warmly and naturally in the detected language (Arabic if the question is in Arabic, English otherwise). Do NOT mention poems or verses.
         B) FACTUAL QUESTIONS ABOUT AL-MUTANABBI, HIS POEMS, OR SPECIFIC LINES/VERSES
            (e.g., biography, style, completing or explaining a specific verse, identifying who is praised in a specific poem or line, etc.) —
-           1. Look in the retrieved material for matching lines, poem headers, or details. Answer the question directly and concisely in English (or Arabic if requested), using the facts.
+           1. Look in the retrieved material for matching lines, poem headers, or details. Answer the question directly and concisely in the detected language (Arabic if the question is in Arabic, English otherwise), using the facts.
            2. If the question quotes a verse in English translation (e.g., "We weep for our dead against our will"), translate it mentally to identify the matching Arabic line, then output the next line or lines from the same poem in Arabic (copying them exactly as written).
            3. If the question is in English but refers to events, relationships, or first poems (e.g., "first poem praising Sayf al-Dawla"), scan the Arabic material for relevant mentions (e.g., references to first contact "أول اتصاله به" or first recitation/poetry "أول ما أنشده" / "أول شعر") and answer the question in English, quoting the poem's opening line (e.g., "وفاؤكما كالربع أشجاه طاسمه") or title in Arabic.
            4. Do NOT mention the word "context" (such as "provided context", "according to the context", "based on the context", etc.) anywhere in your response. Simply state the answer directly based on the facts.
@@ -433,8 +439,8 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
            NEVER write [poemId: Unknown]. The [POEM ID: X] header is ALWAYS present and gives you the ID.
            NEVER omit the tag. NEVER use any other bracket style.
         5. Do NOT repeat lines that already appear in the Conversation History (if provided above).
-        6. If you cannot find any matching lines after scanning all excerpts, respond in English only:
-             "No related verses were found in the collection for this topic."
+        6. If you cannot find any matching lines after scanning all excerpts, respond in the detected language only (Arabic if the question is in Arabic, English otherwise):
+             "No related verses were found in the collection for this topic." (or its Arabic equivalent: "لم يُعثر على أبيات ذات صلة بهذا الموضوع في المجموعة.")
         7. Do NOT make up or modify any poem lines. Copy them exactly as written.
 
         Context:
