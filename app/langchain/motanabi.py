@@ -14,7 +14,7 @@ from typing import List
 import re
 import requests
 import psycopg2
-from sqlalchemy import delete as sa_delete
+from sqlalchemy import delete as sa_delete, text
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -207,6 +207,69 @@ def _augment_query_for_retrieval(question: str) -> str:
     return augmented if augmented else question
 
 
+def _prepare_search_inputs(question: str, conversation_history: str = None) -> tuple[str, list[str]]:
+    """
+    Consolidates question rewriting, retrieval query augmentation, and Arabic keyword extraction
+    into a single LLM call to minimize API latency.
+    
+    Returns:
+        tuple[retrieval_query, list_of_arabic_keywords]
+    """
+    if conversation_history:
+        history_context = (
+            f"Conversation History:\n{conversation_history}\n\n"
+            f"Follow-up Question: {question}\n"
+        )
+        instruction = (
+            "First, resolve the follow-up question using the conversation history to determine the "
+            "standalone topic the user is asking about. Then perform the tasks below based on that resolved topic."
+        )
+    else:
+        history_context = f"Question: {question}\n"
+        instruction = "Perform the tasks below based on this question."
+
+    prompt = (
+        "You are an AI assistant specialized in search query optimization and Classical Arabic poetry (specifically Al-Mutanabbi's diwan).\n"
+        f"{history_context}\n"
+        f"{instruction}\n\n"
+        "Your task is to generate search inputs for our retrieval pipeline. Output a JSON object with exactly two keys:\n"
+        "1. \"retrieval_query\": A SHORT bilingual (English + Arabic) search query optimized for a multilingual vector store. "
+        "Include the key topic, Al-Mutanabbi, and synonyms in both languages (e.g. 'horses خيل جياد'). "
+        "If a specific poem title or recipient is mentioned, prioritize the Arabic name/title.\n"
+        "2. \"arabic_keywords\": A JSON array of key Arabic words, phrases, and expanded synonyms for direct database filtering (SQL ILIKE). "
+        "Rules for keywords:\n"
+        "  - Include the Arabic form of any mentioned poem titles, recipients, or event locations.\n"
+        "  - Include key content words, and expand common synonyms (e.g., if 'أم' (mother) is requested, add 'والدة'; if 'death'/'وفاة' is requested, add 'توفي', 'ماتت', 'مات', 'وفاتها'; if 'رثاء' (elegy) is requested, add 'يرثي', 'رثاها', 'مرثية').\n"
+        "  - IMPORTANT: Include specific multi-word search phrases representing relationships or events asked about (e.g. 'والدة سيف الدولة', 'وفاة أم سيف الدولة', 'أول قصيدة مدح بها سيف الدولة'). This is critical for matching book headers.\n"
+        "  - Keep individual terms clean and relevant.\n\n"
+        "Respond ONLY with a valid JSON object. Do not include markdown code block formatting or explanations. Example output format:\n"
+        "{\n"
+        "  \"retrieval_query\": \"horses Al-Mutanabbi خيل جياد أفراس فرس\",\n"
+        "  \"arabic_keywords\": [\"خيل\", \"جياد\", \"أفراس\", \"فرس\"]\n"
+        "}"
+    )
+
+    try:
+        response = llm.invoke(prompt)
+        content = response.content.strip()
+        # strip markdown code blocks if the LLM outputted them
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\n|```$", "", content, flags=re.IGNORECASE).strip()
+        
+        import json
+        data = json.loads(content)
+        retrieval_query = data.get("retrieval_query", "").strip() or question
+        arabic_keywords = data.get("arabic_keywords", [])
+        
+        print(f"[motanabi] Optimized retrieval query: {retrieval_query!r}")
+        print(f"[motanabi] Optimized Arabic keywords: {arabic_keywords}")
+        return retrieval_query, [k.strip() for k in arabic_keywords if k.strip()]
+    except Exception as e:
+        print(f"[motanabi] Warning: Consolidated query preparation failed: {e}. Falling back to default behavior.")
+        # Fallback to simple query and empty keywords
+        return question, []
+
+
 def query_motanabi(question: str):
     return _query_motanabi_core(question)
 
@@ -319,52 +382,49 @@ def _sql_keyword_search(keywords: list[str], limit: int = 10) -> list[Document]:
         return []
 
     try:
-        conn = psycopg2.connect(_PG_DSN)
-        cur = conn.cursor()
-        
         score_parts = []
         conditions = []
-        params = []
+        params = {}
         
-        for kw in filtered_keywords:
-            score_parts.append("(CASE WHEN e.document ILIKE %s THEN 1 ELSE 0 END)")
-            params.append(f"%{kw}%")
-            
-        for kw in filtered_keywords:
-            conditions.append("e.document ILIKE %s")
-            params.append(f"%{kw}%")
+        for i, kw in enumerate(filtered_keywords):
+            param_name = f"kw_{i}"
+            score_parts.append(f"(CASE WHEN e.document ILIKE :{param_name} THEN 1 ELSE 0 END)")
+            conditions.append(f"e.document ILIKE :{param_name}")
+            params[param_name] = f"%{kw}%"
             
         score_expr = " + ".join(score_parts)
         where_expr = " OR ".join(conditions)
+        params["limit_val"] = limit * 3
         
-        # limit * 3 is used to retrieve enough candidates for deduplication, since multiple chunks might have identical content prefixes
-        sql_query = f"""
+        sql_query = text(f"""
             SELECT e.document, e.cmetadata, ({score_expr}) as match_score
             FROM langchain_pg_embedding e
             JOIN langchain_pg_collection c ON c.uuid = e.collection_id
             WHERE c.name = 'motanabi'
               AND ({where_expr})
             ORDER BY match_score DESC, e.cmetadata->>'source' ASC, e.id ASC
-            LIMIT %s;
-        """
-        params.append(limit * 3)
-        
-        cur.execute(sql_query, tuple(params))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+            LIMIT :limit_val;
+        """)
         
         docs = []
         seen_contents = set()
-        for row in rows:
-            if len(docs) >= limit:
-                break
-            content = row[0]
-            content_key = content[:100]
-            if content_key not in seen_contents:
-                docs.append(Document(page_content=content, metadata=row[1] or {}))
-                seen_contents.add(content_key)
-                
+        session = None
+        try:
+            with vector_store._make_sync_session() as s:
+                session = s
+                result = session.execute(sql_query, params)
+                for row in result:
+                    if len(docs) >= limit:
+                        break
+                    content = row[0]
+                    content_key = content[:100]
+                    if content_key not in seen_contents:
+                        docs.append(Document(page_content=content, metadata=row[1] or {}))
+                        seen_contents.add(content_key)
+        finally:
+            if session:
+                session.close()
+                    
         print(f"[motanabi] SQL keyword search returned {len(docs)} extra chunk(s) using keywords: {filtered_keywords}")
         return docs
     except Exception as e:
@@ -397,37 +457,48 @@ def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Documen
         return []
 
     try:
-        conn = psycopg2.connect(_PG_DSN)
-        cur = conn.cursor()
+        params = {}
+        conditions = []
+        for i, kw in enumerate(search_terms):
+            param_name = f"kw_{i}"
+            conditions.append(f"e.document ILIKE :{param_name}")
+            params[param_name] = f"%{kw}%"
+        
+        conditions_str = " OR ".join(conditions)
+        # Fetch more candidates because we filter by source type in Python
+        params["limit_val"] = limit * 6
 
-        conditions = " OR ".join(["e.document ILIKE %s" for _ in search_terms])
-        params = [f"%{kw}%" for kw in search_terms] + [limit * 2]
-
-        cur.execute(f"""
+        sql_query = text(f"""
             SELECT e.document, e.cmetadata
             FROM langchain_pg_embedding e
             JOIN langchain_pg_collection c ON c.uuid = e.collection_id
             WHERE c.name = 'motanabi'
-              AND e.cmetadata->>'source' LIKE 'poemsTxtFile%%'
-              AND ({conditions})
+              AND ({conditions_str})
             ORDER BY e.id ASC
-            LIMIT %s;
-        """, params)
-
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+            LIMIT :limit_val;
+        """)
 
         docs = []
         seen = set()
-        for row in rows:
-            if len(docs) >= limit:
-                break
-            content = row[0]
-            key = content[:100]
-            if key not in seen:
-                docs.append(Document(page_content=content, metadata=row[1] or {}))
-                seen.add(key)
+        session = None
+        try:
+            with vector_store._make_sync_session() as s:
+                session = s
+                result = session.execute(sql_query, params)
+                for row in result:
+                    if len(docs) >= limit:
+                        break
+                    content = row[0]
+                    metadata = row[1] or {}
+                    # Python filtering of source type to avoid PostgreSQL unpacking TOAST data (JSONB) on full table scan
+                    if metadata.get("source", "").startswith("poemsTxtFile"):
+                        key = content[:100]
+                        if key not in seen:
+                            docs.append(Document(page_content=content, metadata=metadata))
+                            seen.add(key)
+        finally:
+            if session:
+                session.close()
 
         print(f"[motanabi] Poem header search returned {len(docs)} chunk(s) from poemsTxtFile "
               f"(using {'phrases' if phrase_terms else 'keywords'}: {search_terms[:3]})")
@@ -439,14 +510,8 @@ def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Documen
 
 def _query_motanabi_core(question: str, conversation_history: str = None):
     try:
-        # ── Step 1: Build retrieval query ───────────────────────────────────────
-        if conversation_history:
-            # Rewrite follow-up as standalone, then augment with Arabic
-            standalone = _rewrite_standalone_question(question, conversation_history)
-            print(f"[motanabi] Rewritten retrieval query: {standalone!r}")
-            retrieval_query = _augment_query_for_retrieval(standalone)
-        else:
-            retrieval_query = _augment_query_for_retrieval(question)
+        # ── Step 1: Build retrieval query and extract keywords in a consolidated LLM call ──
+        retrieval_query, arabic_keywords = _prepare_search_inputs(question, conversation_history)
 
         # ── Step 2: Retrieve documents using the enriched query ─────────────────
         retriever = vector_store.as_retriever(
@@ -457,8 +522,7 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
         # ── Step 2b: SQL keyword fallback ────────────────────────────────────────
         # For poem-title / metadata questions, embedding search can miss the right
         # chunk due to spelling variants (عواذل vs أواذل) or transliterations.
-        # Extract Arabic keywords and do a direct ILIKE search, then merge.
-        arabic_keywords = _extract_arabic_keywords(question)
+        # Use direct ILIKE search using consolidated keywords, then merge.
         if arabic_keywords:
             # Step 2b-i: Poem header search (HIGHEST PRIORITY)
             # poemsTxtFile chunks contain structured year/title/description — they
