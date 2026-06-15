@@ -27,6 +27,7 @@ load_dotenv()
 _PG_DSN = f"postgresql://{user}:{password}@ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com/books"
 
 llm = init_chat_model("gpt-4o", model_provider="openai")
+fast_llm = init_chat_model("gpt-4o-mini", model_provider="openai")
 embeddings = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small")
 
 vector_store = PGVector(
@@ -250,7 +251,7 @@ def _prepare_search_inputs(question: str, conversation_history: str = None) -> t
     )
 
     try:
-        response = llm.invoke(prompt)
+        response = fast_llm.invoke(prompt)
         content = response.content.strip()
         # strip markdown code blocks if the LLM outputted them
         if content.startswith("```"):
@@ -450,9 +451,24 @@ def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Documen
     # Prefer multi-word phrases (contain a space) as they are far more specific.
     # Fall back to long single words (>4 chars) only if no phrases are available.
     phrase_terms = [kw.strip() for kw in keywords if ' ' in kw.strip() and len(kw.strip()) > 3]
+    
+    # Automatically expand 'أم' <-> 'والدة' in phrase search terms to ensure robust matching
+    expanded_phrases = []
+    for p in phrase_terms:
+        if p not in expanded_phrases:
+            expanded_phrases.append(p)
+        if 'أم' in p:
+            alt = p.replace('أم', 'والدة')
+            if alt not in expanded_phrases:
+                expanded_phrases.append(alt)
+        if 'والدة' in p:
+            alt = p.replace('والدة', 'أم')
+            if alt not in expanded_phrases:
+                expanded_phrases.append(alt)
+
     fallback_terms = [kw.strip() for kw in keywords if ' ' not in kw.strip() and len(kw.strip()) > 4]
 
-    search_terms = phrase_terms if phrase_terms else fallback_terms
+    search_terms = expanded_phrases if expanded_phrases else fallback_terms
     if not search_terms:
         return []
 
@@ -515,7 +531,7 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
 
         # ── Step 2: Retrieve documents using the enriched query ─────────────────
         retriever = vector_store.as_retriever(
-            search_type="similarity", search_kwargs={"k": 30}
+            search_type="similarity", search_kwargs={"k": 15}
         )
         source_documents = retriever.invoke(retrieval_query)
 
@@ -528,7 +544,7 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
             # poemsTxtFile chunks contain structured year/title/description — they
             # are the single most authoritative source for factual questions.
             # Insert them first so the LLM sees them before any other content.
-            poem_header_docs = _sql_poem_header_search(arabic_keywords, limit=5)
+            poem_header_docs = _sql_poem_header_search(arabic_keywords, limit=3)
             existing_contents = {d.page_content[:100] for d in source_documents}
             for doc in reversed(poem_header_docs):  # reversed so first result ends up at index 0
                 if doc.page_content[:100] not in existing_contents:
@@ -536,7 +552,7 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
                     existing_contents.add(doc.page_content[:100])
 
             # Step 2b-ii: Regular SQL keyword fallback (alwaraq + all sources)
-            sql_docs = _sql_keyword_search(arabic_keywords, limit=10)
+            sql_docs = _sql_keyword_search(arabic_keywords, limit=5)
             for doc in sql_docs:
                 if doc.page_content[:100] not in existing_contents:
                     source_documents.insert(len(poem_header_docs), doc)  # after poem headers
