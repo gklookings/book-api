@@ -27,7 +27,7 @@ load_dotenv()
 _PG_DSN = f"postgresql://{user}:{password}@ai-books-instance-1.cncnbuvqyldu.eu-central-1.rds.amazonaws.com/books"
 
 llm = init_chat_model("gpt-4o", model_provider="openai")
-fast_llm = init_chat_model("gpt-4o-mini", model_provider="openai")
+fast_llm = init_chat_model("gpt-4o", model_provider="openai")
 embeddings = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small")
 
 vector_store = PGVector(
@@ -240,8 +240,12 @@ def _prepare_search_inputs(question: str, conversation_history: str = None) -> t
         "2. \"arabic_keywords\": A JSON array of key Arabic words, phrases, and expanded synonyms for direct database filtering (SQL ILIKE). "
         "Rules for keywords:\n"
         "  - Include the Arabic form of any mentioned poem titles, recipients, or event locations.\n"
-        "  - Include key content words, and expand common synonyms (e.g., if 'أم' (mother) is requested, add 'والدة'; if 'death'/'وفاة' is requested, add 'توفي', 'ماتت', 'مات', 'وفاتها'; if 'رثاء' (elegy) is requested, add 'يرثي', 'رثاها', 'مرثية').\n"
-        "  - IMPORTANT: Include specific multi-word search phrases representing relationships or events asked about (e.g. 'والدة سيف الدولة', 'وفاة أم سيف الدولة', 'أول قصيدة مدح بها سيف الدولة'). This is critical for matching book headers.\n"
+        "  - If the input is a QUOTED VERSE or partial verse (e.g. 'أنبكي لموتانا على غير رغبة'), include:\n"
+        "      * The quoted verse phrase itself (e.g. 'أنبكي لموتانا').\n"
+        "      * Each individual significant word from the verse (e.g. 'نبكي', 'موتانا', 'رغبة').\n"
+        "      * Synonyms and morphological variants: e.g., 'نبكي' → also 'أبكي', 'بكاء', 'يبكي'; 'موتانا'/'موتى' → also 'أموات', 'الموتى'; 'رغبة' → also 'إرادة'.\n"
+        "  - Expand common synonyms (e.g., if 'أم' is present add 'والدة'; if 'وفاة'/'مات' add 'توفي', 'ماتت', 'وفاتها'; if 'رثاء' add 'يرثي', 'رثاها', 'مرثية').\n"
+        "  - Include specific multi-word search phrases representing relationships or events asked about (e.g. 'والدة سيف الدولة', 'وفاة أم سيف الدولة', 'أول قصيدة مدح بها سيف الدولة'). This is critical for matching book headers.\n"
         "  - Keep individual terms clean and relevant.\n\n"
         "Respond ONLY with a valid JSON object. Do not include markdown code block formatting or explanations. Example output format:\n"
         "{\n"
@@ -352,6 +356,17 @@ def _sql_keyword_search(keywords: list[str], limit: int = 10) -> list[Document]:
         'توفيت':   ['وفاة', 'ماتت'],
         'أخت':     ['أخته'],
         'أخته':    ['أخت'],
+        # Verse-completion synonyms
+        'نبكي':    ['أبكي', 'يبكي', 'بكاء', 'نبكي'],
+        'أبكي':    ['نبكي', 'يبكي', 'بكاء'],
+        'يبكي':    ['نبكي', 'أبكي', 'بكاء'],
+        'بكاء':    ['نبكي', 'أبكي', 'يبكي'],
+        'موتانا':  ['موتى', 'أموات', 'الموتى'],
+        'موتى':    ['موتانا', 'أموات', 'الموتى'],
+        'أموات':   ['موتانا', 'موتى', 'الموتى'],
+        'الموتى':  ['موتانا', 'موتى', 'أموات'],
+        'رغبة':    ['إرادة', 'مشيئة'],
+        'إرادة':   ['رغبة', 'مشيئة'],
     }
 
     expanded_keywords = []
@@ -531,7 +546,7 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
 
         # ── Step 2: Retrieve documents using the enriched query ─────────────────
         retriever = vector_store.as_retriever(
-            search_type="similarity", search_kwargs={"k": 15}
+            search_type="similarity", search_kwargs={"k": 30}
         )
         source_documents = retriever.invoke(retrieval_query)
 
@@ -598,7 +613,10 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
         B) FACTUAL QUESTIONS ABOUT AL-MUTANABBI, HIS POEMS, OR SPECIFIC LINES/VERSES
            (e.g., biography, style, completing or explaining a specific verse, identifying who is praised in a specific poem or line, etc.) —
            1. Scan ALL retrieved material carefully for the answer. Answer directly and concisely in the detected language using what you find. Facts may be stated in Arabic prose, in Arabic numerals, or as Arabic number-words (e.g., "سبع وثلاثين وثلاثمائة" = 337 AH) — read them all and summarize accurately.
-           2. If the question quotes a verse in English translation (e.g., "We weep for our dead against our will"), translate it mentally to identify the matching Arabic line, then output the next line or lines from the same poem in Arabic (copying them exactly as written).
+           2. VERSE COMPLETION — if the question quotes a verse (in Arabic OR English) and asks to complete it (e.g., "هل يمكنك إكمال البيت", "complete the verse", "what comes next"):
+              a. If the verse is quoted in ARABIC (e.g., "أنبكي لموتانا على غير رغبة"): search the retrieved chunks for that exact phrase or its key words (نبكي, موتانا, رغبة), locate the full couplet in the source, and output the completing hemistich or next line exactly as written.
+              b. If the verse is quoted in ENGLISH TRANSLATION (e.g., "We weep for our dead against our will"): translate it mentally to the matching Arabic line, then output the next line or lines in Arabic (copying exactly as written).
+              In BOTH cases, copy the lines exactly as they appear in the retrieved material — do NOT paraphrase or modify.
            3. If the question is in English but refers to events, relationships, or first poems (e.g., "first poem praising Sayf al-Dawla"), scan the Arabic material for relevant mentions (e.g., references to first contact "أول اتصاله به" or first recitation/poetry "أول ما أنشده" / "أول شعر") and answer the question in English, quoting the poem's opening line (e.g., "وفاؤكما كالربع أشجاه طاسمه") or title in Arabic.
            4. Do NOT mention the word "context" (such as "provided context", "according to the context", "based on the context", etc.) anywhere in your response. Simply state the answer directly based on the facts.
            5. No hallucination rule: Only report facts that are present in the retrieved material. Do NOT invent, guess, or estimate specific dates, years, poem titles, verses, or names that are not found anywhere in the retrieved material. If after scanning ALL retrieved material the specific fact is genuinely absent, say so clearly in the detected language (e.g., "لم تُذكر هذه المعلومة في المادة المتوفرة." or "This information was not found in the available material.") — but only say this as a last resort after a thorough scan.
