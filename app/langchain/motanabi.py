@@ -230,27 +230,25 @@ def _prepare_search_inputs(question: str, conversation_history: str = None) -> t
         instruction = "Perform the tasks below based on this question."
 
     prompt = (
-        "You are an AI assistant specialized in search query optimization and Classical Arabic poetry (specifically Al-Mutanabbi's diwan).\n"
+        "You are an AI assistant specialized in search query optimization for Classical Arabic literature and poetry (specifically Al-Mutanabbi's biography and diwan).\n"
         f"{history_context}\n"
         f"{instruction}\n\n"
         "Your task is to generate search inputs for our retrieval pipeline. Output a JSON object with exactly two keys:\n"
-        "1. \"retrieval_query\": A SHORT bilingual (English + Arabic) search query optimized for a multilingual vector store. "
-        "Include the key topic, Al-Mutanabbi, and synonyms in both languages (e.g. 'horses خيل جياد'). "
-        "If a specific poem title or recipient is mentioned, prioritize the Arabic name/title.\n"
-        "2. \"arabic_keywords\": A JSON array of key Arabic words, phrases, and expanded synonyms for direct database filtering (SQL ILIKE). "
-        "Rules for keywords:\n"
-        "  - Include the Arabic form of any mentioned poem titles, recipients, or event locations.\n"
-        "  - If the input is a QUOTED VERSE or partial verse (e.g. 'أنبكي لموتانا على غير رغبة'), include:\n"
-        "      * The quoted verse phrase itself (e.g. 'أنبكي لموتانا').\n"
-        "      * Each individual significant word from the verse (e.g. 'نبكي', 'موتانا', 'رغبة').\n"
-        "      * Synonyms and morphological variants: e.g., 'نبكي' → also 'أبكي', 'بكاء', 'يبكي'; 'موتانا'/'موتى' → also 'أموات', 'الموتى'; 'رغبة' → also 'إرادة'.\n"
-        "  - Expand common synonyms (e.g., if 'أم' is present add 'والدة'; if 'وفاة'/'مات' add 'توفي', 'ماتت', 'وفاتها'; if 'رثاء' add 'يرثي', 'رثاها', 'مرثية').\n"
-        "  - Include specific multi-word search phrases representing relationships or events asked about (e.g. 'والدة سيف الدولة', 'وفاة أم سيف الدولة', 'أول قصيدة مدح بها سيف الدولة'). This is critical for matching book headers.\n"
-        "  - Keep individual terms clean and relevant.\n\n"
+        "1. \"retrieval_query\": A SHORT bilingual (English + Arabic) search query optimized for a multilingual vector store.\n"
+        "   Rules for retrieval_query:\n"
+        "     - Include ONLY the specific topic keywords and their synonyms in both English and Arabic (e.g. 'watermelon seller بائع البطيخ').\n"
+        "     - CRITICAL: DO NOT guess, extrapolate, or invent answers to the question. For example, if the question asks 'In which city did Al-Mutanabbi settle after leaving Aleppo?', DO NOT guess or include cities like 'Baghdad', 'Mosul', or 'Cairo' in the query unless they are explicitly mentioned in the question. Keep the query focused strictly on 'leaving Aleppo settle city' / 'الرحيل من حلب استقر مدينة'.\n"
+        "     - DO NOT include generic terms like 'Al-Mutanabbi', 'poetry', 'poem', 'diwan', or 'المتنبي', 'شعر', 'قصيدة', 'ديوان' in the query unless they are the primary subject of the question (e.g., 'who is Al-Mutanabbi?'). These generic terms dilute the vector search.\n"
+        "2. \"arabic_keywords\": A JSON array of key Arabic words, phrases, and expanded synonyms for direct database filtering (SQL ILIKE).\n"
+        "   Rules for arabic_keywords:\n"
+        "     - Include the Arabic form of any mentioned poem titles, recipients, or event locations.\n"
+        "     - CRITICAL: DO NOT include generic, high-frequency terms like 'المتنبي', 'أبو الطيب', 'أحمد بن الحسين', 'شعر', 'قصيدة', 'ديوان', 'قصائد', 'أبيات', 'بيت' in the keywords array. These words appear in almost every document and dilute database search scores.\n"
+        "     - Focus strictly on unique content words (e.g., 'البطيخ', 'بائع', 'الرحيل', 'حلب', 'استقر', 'بلد').\n"
+        "     - Expand synonyms: e.g., for 'أم' add 'والدة'; for 'وفاة' add 'توفي', 'مات'.\n\n"
         "Respond ONLY with a valid JSON object. Do not include markdown code block formatting or explanations. Example output format:\n"
         "{\n"
-        "  \"retrieval_query\": \"horses Al-Mutanabbi خيل جياد أفراس فرس\",\n"
-        "  \"arabic_keywords\": [\"خيل\", \"جياد\", \"أفراس\", \"فرس\"]\n"
+        "  \"retrieval_query\": \"watermelon seller بائع البطيخ\",\n"
+        "  \"arabic_keywords\": [\"البطيخ\", \"بائع\"]\n"
         "}"
     )
 
@@ -337,7 +335,9 @@ def _sql_keyword_search(keywords: list[str], limit: int = 10) -> list[Document]:
     # Exclude common stop words/broad search terms that match almost all documents
     stop_words = {
         'مدح', 'شعر', 'قصيدة', 'ديوان', 'المتنبي', 'أبو الطيب', 'موضوع', 'سيف الدولة',
-        'كافور', 'ممدوح', 'ابن', 'في', 'من', 'على', 'عن', 'إلى', 'مع', 'أو', 'أن', 'لا'
+        'كافور', 'ممدوح', 'ابن', 'في', 'من', 'على', 'عن', 'إلى', 'مع', 'أو', 'أن', 'لا',
+        'أبو', 'الطيب', 'أحمد', 'الحسين', 'قصة', 'حكاية', 'خبر', 'رواية', 'العربي', 'الكلاسيكي',
+        'القديم', 'كتاب', 'تاريخ', 'صفحة', 'باب', 'أشعار', 'قصائد', 'بيت', 'أبيات'
     }
 
     # Hardcoded Arabic synonym expansions — deterministic, no LLM dependency.
@@ -410,7 +410,7 @@ def _sql_keyword_search(keywords: list[str], limit: int = 10) -> list[Document]:
             
         score_expr = " + ".join(score_parts)
         where_expr = " OR ".join(conditions)
-        params["limit_val"] = limit * 3
+        params["limit_val"] = limit * 20  # Fetch more candidates to rank in Python
         
         sql_query = text(f"""
             SELECT e.document, e.cmetadata, ({score_expr}) as match_score
@@ -418,28 +418,44 @@ def _sql_keyword_search(keywords: list[str], limit: int = 10) -> list[Document]:
             JOIN langchain_pg_collection c ON c.uuid = e.collection_id
             WHERE c.name = 'motanabi'
               AND ({where_expr})
-            ORDER BY match_score DESC, e.cmetadata->>'source' ASC, e.id ASC
+            ORDER BY match_score DESC, e.id ASC
             LIMIT :limit_val;
         """)
         
-        docs = []
-        seen_contents = set()
+        raw_docs = []
         session = None
         try:
             with vector_store._make_sync_session() as s:
                 session = s
                 result = session.execute(sql_query, params)
                 for row in result:
-                    if len(docs) >= limit:
-                        break
-                    content = row[0]
-                    content_key = content[:100]
-                    if content_key not in seen_contents:
-                        docs.append(Document(page_content=content, metadata=row[1] or {}))
-                        seen_contents.add(content_key)
+                    raw_docs.append((row[0], row[1] or {}, row[2]))
         finally:
             if session:
                 session.close()
+                
+        # Calculate local Term Frequency (TF) score in Python to rank documents
+        # that match the rare keywords multiple times higher.
+        ranked_candidates = []
+        for content, metadata, sql_score in raw_docs:
+            tf_score = 0
+            for kw in filtered_keywords:
+                matches = re.findall(re.escape(kw), content, re.IGNORECASE)
+                tf_score += len(matches)
+            ranked_candidates.append((content, metadata, sql_score, tf_score))
+            
+        # Sort by TF score DESC, then SQL match score DESC
+        ranked_candidates.sort(key=lambda x: (x[3], x[2]), reverse=True)
+        
+        docs = []
+        seen_contents = set()
+        for content, metadata, _, _ in ranked_candidates:
+            if len(docs) >= limit:
+                break
+            content_key = content[:100]
+            if content_key not in seen_contents:
+                docs.append(Document(page_content=content, metadata=metadata))
+                seen_contents.add(content_key)
                     
         print(f"[motanabi] SQL keyword search returned {len(docs)} extra chunk(s) using keywords: {filtered_keywords}")
         return docs
@@ -463,9 +479,24 @@ def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Documen
     if not keywords:
         return []
 
+    # Python-level relationship phrase reconstruction to handle cases where LLM splits them
+    relationship_nouns = {"أم", "والدة", "أخت", "ابن", "بنت", "زوجة", "صديق", "ممدوح"}
+    name_phrases = {"سيف الدولة", "سيف الدوله", "ناصر الدولة", "ناصر الدوله", "بدر بن عمار", "كافور"}
+    
+    reconstructed_phrases = []
+    for noun in relationship_nouns:
+        has_noun = any(noun in kw for kw in keywords)
+        if has_noun:
+            for name in name_phrases:
+                has_name = any(name in kw for kw in keywords)
+                if has_name:
+                    reconstructed_phrases.append(f"{noun} {name}")
+                    
+    extended_keywords = reconstructed_phrases + keywords
+
     # Prefer multi-word phrases (contain a space) as they are far more specific.
-    # Fall back to long single words (>4 chars) only if no phrases are available.
-    phrase_terms = [kw.strip() for kw in keywords if ' ' in kw.strip() and len(kw.strip()) > 3]
+    # Fall back to long single words (>3 chars) only if no phrases are available.
+    phrase_terms = [kw.strip() for kw in extended_keywords if ' ' in kw.strip() and len(kw.strip()) > 3]
     
     # Automatically expand 'أم' <-> 'والدة' in phrase search terms to ensure robust matching
     expanded_phrases = []
@@ -481,9 +512,13 @@ def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Documen
             if alt not in expanded_phrases:
                 expanded_phrases.append(alt)
 
-    fallback_terms = [kw.strip() for kw in keywords if ' ' not in kw.strip() and len(kw.strip()) > 4]
+    # Generic header stop phrases
+    generic_phrases = {"سيف الدولة", "سيف الدوله", "أبو الطيب", "ابن حمدان", "كافور"}
+    specific_phrases = [t for t in expanded_phrases if t not in generic_phrases]
 
-    search_terms = expanded_phrases if expanded_phrases else fallback_terms
+    fallback_terms = [kw.strip() for kw in extended_keywords if ' ' not in kw.strip() and len(kw.strip()) > 3]
+
+    search_terms = specific_phrases if specific_phrases else fallback_terms
     if not search_terms:
         return []
 
@@ -497,7 +532,7 @@ def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Documen
         
         conditions_str = " OR ".join(conditions)
         # Fetch more candidates because we filter by source type in Python
-        params["limit_val"] = limit * 6
+        params["limit_val"] = 200
 
         sql_query = text(f"""
             SELECT e.document, e.cmetadata
@@ -509,27 +544,43 @@ def _sql_poem_header_search(keywords: list[str], limit: int = 5) -> list[Documen
             LIMIT :limit_val;
         """)
 
-        docs = []
-        seen = set()
+        raw_docs = []
         session = None
         try:
             with vector_store._make_sync_session() as s:
                 session = s
                 result = session.execute(sql_query, params)
                 for row in result:
-                    if len(docs) >= limit:
-                        break
-                    content = row[0]
-                    metadata = row[1] or {}
-                    # Python filtering of source type to avoid PostgreSQL unpacking TOAST data (JSONB) on full table scan
-                    if metadata.get("source", "").startswith("poemsTxtFile"):
-                        key = content[:100]
-                        if key not in seen:
-                            docs.append(Document(page_content=content, metadata=metadata))
-                            seen.add(key)
+                    raw_docs.append((row[0], row[1] or {}))
         finally:
             if session:
                 session.close()
+
+        # Filter for poemsTxtFile and rank using Local TF in Python
+        ranked_candidates = []
+        for content, metadata in raw_docs:
+            if metadata.get("source", "").startswith("poemsTxtFile"):
+                tf_score = 0
+                for kw in extended_keywords:
+                    # ignore generic terms from TF score calculation
+                    if kw in {"سيف الدولة", "سيف الدوله", "المتنبي", "أبو الطيب", "شعر", "قصيدة"}:
+                        continue
+                    matches = re.findall(re.escape(kw), content, re.IGNORECASE)
+                    tf_score += len(matches)
+                ranked_candidates.append((content, metadata, tf_score))
+                
+        # Sort by TF score DESC
+        ranked_candidates.sort(key=lambda x: x[2], reverse=True)
+
+        docs = []
+        seen = set()
+        for content, metadata, _ in ranked_candidates:
+            if len(docs) >= limit:
+                break
+            key = content[:100]
+            if key not in seen:
+                docs.append(Document(page_content=content, metadata=metadata))
+                seen.add(key)
 
         print(f"[motanabi] Poem header search returned {len(docs)} chunk(s) from poemsTxtFile "
               f"(using {'phrases' if phrase_terms else 'keywords'}: {search_terms[:3]})")
@@ -632,9 +683,9 @@ def _query_motanabi_core(question: str, conversation_history: str = None):
              - "sea"    → look for: بحر، يم، موج
            Do the same Arabic-word lookup for any other topic.
         3. Return a line if and only if:
-             a) It contains one of those Arabic words, OR
-             b) Its entire meaning is unmistakably and primarily about the topic.
-           Do NOT return a line just because it is in the same poem.
+              a) It contains one of those specific Arabic words (e.g. for horses: خيل, جياد, فرس, إلخ), OR
+              b) Its entire meaning is unmistakably, directly, and primarily about the topic.
+            CRITICAL: Do NOT return a line just because it is in the same poem or chunk as a matching line. If a line is about general battle, fleeing enemies, spears, dust, or time, and does not contain the specific topic words, you MUST exclude it. Each returned line must be able to stand alone as a match for the topic.
         4. For EVERY matching line, tag it using the [POEM ID: X] of the excerpt it came from:
              "<line text>" [poemId: X]
            NEVER write [poemId: Unknown]. The [POEM ID: X] header is ALWAYS present and gives you the ID.
