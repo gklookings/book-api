@@ -121,6 +121,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def clean_title(value) -> str:
+    """Unescape quotes and drop a stray trailing full stop ("Girl." -> "Girl", keeps "...")."""
+    cleaned = (value or "").replace("\\'", "'").replace('\\"', '"')
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return re.sub(r"(?<!\.)\s*\.$", "", cleaned)
+
+
 def _clean_text(value, limit: int = DESCRIPTION_LIMIT) -> str:
     """Strip HTML / escaped line breaks from API descriptions and truncate."""
     if not value:
@@ -268,8 +275,8 @@ def similar_film_ids(query: str, k: int = 12) -> list:
 
 
 def _film_metadata(entity: dict, poster_valid: bool) -> dict:
-    name_ar_field = (entity.get("name_1") or "").strip()
-    name_en_field = (entity.get("name_2") or "").strip()
+    name_ar_field = clean_title(entity.get("name_1"))
+    name_en_field = clean_title(entity.get("name_2"))
     title_en = name_en_field or name_ar_field
     title_ar = name_ar_field if has_arabic(name_ar_field) else None
 
@@ -289,7 +296,7 @@ def _film_metadata(entity: dict, poster_valid: bool) -> dict:
             "artistId": c.get("artistId"),
             "crewTypeId": c.get("crewTypeId"),
             "crewName": c.get("crewName"),
-            "artistName": (c.get("artistName") or "").strip(),
+            "artistName": clean_title(c.get("artistName")),
             "picture": c.get("picture"),
         }
         for c in entity.get("crew") or []

@@ -129,12 +129,15 @@ def _norm(value) -> str:
     return re.sub(r"\W+", "", (value or "").lower())
 
 
+# clean_title is also applied at ingestion; applying it here fixes already-stored data.
 def _title(film, lang):
-    return (film.get("title_ar") or film["title_en"]) if lang == "ar" else film["title_en"]
+    title = (film.get("title_ar") or film["title_en"]) if lang == "ar" else film["title_en"]
+    return store.clean_title(title)
 
 
 def _name(artist, lang):
-    return (artist.get("name_ar") or artist["name_en"]) if lang == "ar" else artist["name_en"]
+    name = (artist.get("name_ar") or artist["name_en"]) if lang == "ar" else artist["name_en"]
+    return store.clean_title(name)
 
 
 def _both(en, ar):
@@ -361,13 +364,16 @@ def _film_award(ctx, film, role):
 
     title_en, title_ar = _title(film, "en"), _title(film, "ar")
     festival_ar = pools.ar("festivals", festival)
-    year_en = f" ({entry['year']})" if entry["year"] else ""
+    # Festival names vary ("Oscars", "Venice", "Cannes Film Festival"), so keep them
+    # in brackets in English instead of "at the <festival>".
+    context_en = f"{festival} {entry['year']}".strip()
+    year_ar = f" ({entry['year']})" if entry["year"] else ""
     if won:
-        q_en = f'Which award did "{title_en}" win at the {festival}{year_en}?'
-        q_ar = f"ما الجائزة التي فاز بها فيلم «{title_ar}» في {festival_ar}{year_en}؟"
+        q_en = f'Which award did "{title_en}" win ({context_en})?'
+        q_ar = f"ما الجائزة التي فاز بها فيلم «{title_ar}» في {festival_ar}{year_ar}؟"
     else:
-        q_en = f'Which award was "{title_en}" nominated for at the {festival}{year_en}?'
-        q_ar = f"ما الجائزة التي رُشّح لها فيلم «{title_ar}» في {festival_ar}{year_en}؟"
+        q_en = f'Which award was "{title_en}" nominated for ({context_en})?'
+        q_ar = f"ما الجائزة التي رُشّح لها فيلم «{title_ar}» في {festival_ar}{year_ar}؟"
     return _question(
         q_en, q_ar, film["picture"], "text",
         _text_option(entry["award"], pools.ar("awards", entry["award"]), True),
@@ -379,8 +385,9 @@ def _film_award(ctx, film, role):
 def _film_from_description(ctx, film, role):
     names = [film["title_en"], film.get("title_ar")]
     description_en = _mask(film.get("description_en") or "", names)
-    description_ar = _mask(film.get("description_ar") or "", names) or description_en
-    if len(description_en) < MIN_DESCRIPTION_LENGTH:
+    description_ar = _mask(film.get("description_ar") or "", names)
+    # Both languages need a real description; never quote English in the Arabic question.
+    if len(description_en) < MIN_DESCRIPTION_LENGTH or len(description_ar) < MIN_DESCRIPTION_LENGTH:
         return None
     wrongs = ctx.film_distractors(film, need_picture=True)
     if not wrongs:
