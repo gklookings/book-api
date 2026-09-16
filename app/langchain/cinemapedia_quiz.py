@@ -55,6 +55,7 @@ PICTURE_CHECK_WORKERS = 24
 EXCLUDED_COUNTRIES = {"", "unknown"}
 
 ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
+ESCAPED_QUOTE_RE = re.compile(r"\\+(['\"])")
 
 embeddings = HuggingFaceEmbeddings(model_name="intfloat/multilingual-e5-small")
 
@@ -123,7 +124,8 @@ def _now() -> str:
 
 def clean_title(value) -> str:
     """Unescape quotes and drop a stray trailing full stop ("Girl." -> "Girl", keeps "...")."""
-    cleaned = (value or "").replace("\\'", "'").replace('\\"', '"')
+    # The source over-escapes quotes, sometimes with several backslashes ("O\\\'Connor").
+    cleaned = ESCAPED_QUOTE_RE.sub(r"\1", value or "")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return re.sub(r"(?<!\.)\s*\.$", "", cleaned)
 
@@ -132,14 +134,8 @@ def _clean_text(value, limit: int = DESCRIPTION_LIMIT) -> str:
     """Strip HTML / escaped line breaks from API descriptions and truncate."""
     if not value:
         return ""
-    cleaned = html.unescape(value)
-    cleaned = (
-        cleaned.replace("\\r", " ")
-        .replace("\\n", " ")
-        .replace('\\"', '"')
-        .replace("\\'", "'")
-        .replace("\x00", "")
-    )
+    cleaned = ESCAPED_QUOTE_RE.sub(r"\1", html.unescape(value))
+    cleaned = cleaned.replace("\\r", " ").replace("\\n", " ").replace("\x00", "")
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if len(cleaned) <= limit:
