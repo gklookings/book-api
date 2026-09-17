@@ -23,7 +23,8 @@ from collections import Counter
 
 from app.langchain import cinemapedia_quiz as store
 
-QUESTION_COUNTS = (8, 10, 12)
+MIN_QUESTION_COUNT = 1
+MAX_QUESTION_COUNT = 99
 CATEGORIES = ("films", "actors", "directors", "mix")
 LANGUAGES = ("en", "ar")
 DEFAULT_LANGUAGE = "en"
@@ -35,6 +36,8 @@ CACHE_TTL_SECONDS = 1800
 MAX_ATTEMPTS_PER_QUESTION = 30
 DISTRACTOR_SAMPLE_SIZE = 400
 MIN_DESCRIPTION_LENGTH = 60
+# Vector searches cost a DB round trip each; beyond this, distractors come from the same era.
+MAX_SIMILARITY_LOOKUPS = 12
 CATEGORY_ROLES = {"actors": "actor", "directors": "director"}
 
 
@@ -193,6 +196,7 @@ class _Context:
     def __init__(self, pools: _Pools, rng: random.Random):
         self.pools = pools
         self.rng = rng
+        self.similarity_lookups = 0
 
     def _unique_adder(self, chosen, seen, limit, accept):
         def add(item, texts):
@@ -219,9 +223,12 @@ class _Context:
             )
 
         add = self._unique_adder(chosen, seen, WRONG_OPTION_COUNT, ok)
-        query = f"{film['title_en']} {film.get('description_en', '')[:200]}"
-        similar = [self.pools.films_by_id.get(i) for i in store.similar_film_ids(query)]
-        similar = [f for f in similar if f]
+        similar = []
+        if self.similarity_lookups < MAX_SIMILARITY_LOOKUPS:
+            self.similarity_lookups += 1
+            query = f"{film['title_en']} {film.get('description_en', '')[:200]}"
+            similar = [self.pools.films_by_id.get(i) for i in store.similar_film_ids(query)]
+            similar = [f for f in similar if f]
         self.rng.shuffle(similar)
         for candidate in similar:
             add(candidate, (_title(candidate, "en"), _title(candidate, "ar")))

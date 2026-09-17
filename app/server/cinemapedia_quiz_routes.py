@@ -7,7 +7,8 @@ from app.langchain.cinemapedia_quiz_generator import (
     CATEGORIES,
     DEFAULT_LANGUAGE,
     LANGUAGES,
-    QUESTION_COUNTS,
+    MAX_QUESTION_COUNT,
+    MIN_QUESTION_COUNT,
     generate_quiz,
 )
 
@@ -24,7 +25,7 @@ def get_cinemapedia_quiz(
     Generate a Cinemapedia multiple-choice quiz.
 
     Query params:
-        qnCount:  8 | 10 | 12
+        qnCount:  any whole number from 1 to 99
         category: films | actors | directors | mix
         language: en | ar (null/empty -> en). "ar" prioritises items with Arabic data.
 
@@ -34,10 +35,10 @@ def get_cinemapedia_quiz(
     category = (category or "").strip().lower()
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
 
-    if qnCount not in QUESTION_COUNTS:
+    if not MIN_QUESTION_COUNT <= qnCount <= MAX_QUESTION_COUNT:
         raise HTTPException(
             status_code=400,
-            detail=f"qnCount must be one of {list(QUESTION_COUNTS)}",
+            detail=f"qnCount must be between {MIN_QUESTION_COUNT} and {MAX_QUESTION_COUNT}",
         )
     if category not in CATEGORIES:
         raise HTTPException(
