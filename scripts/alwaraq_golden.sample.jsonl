@@ -1,0 +1,5 @@
+{"query": "ماذا كتب ابن بطوطة عن الصين؟", "expected_books": ["REPLACE_WITH_BOOKID"]}
+{"query": "What did Ibn Battuta write about Cairo?", "expected_books": ["REPLACE_WITH_BOOKID"]}
+{"query": "ما الذي ذكره المؤرخون عن المتنبي في الكوفة؟", "expected_books": ["REPLACE_WITH_BOOKID"]}
+{"query": "صف سمرقند كما وردت في هذا الكتاب", "document_id": "REPLACE_WITH_BOOKID"}
+{"query": "ما رأي المؤلف في الهواتف الذكية؟", "document_id": "REPLACE_WITH_BOOKID", "expect_no_evidence": true}

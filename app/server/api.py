@@ -40,6 +40,7 @@ from app.langchain.awards import store_awards_file, query_awards
 from app.langchain.cinema import query_cinema
 
 from app.server.cinemapedia_quiz_routes import router as cinemapedia_quiz_router
+from app.server.alwaraq_routes import router as alwaraq_router
 
 from app.langchain.scientist import (
     give_clue,
@@ -55,6 +56,7 @@ from app.langchain.scientist import (
 
 app = FastAPI()
 app.include_router(cinemapedia_quiz_router)
+app.include_router(alwaraq_router)
 
 origins = [
     "*",
