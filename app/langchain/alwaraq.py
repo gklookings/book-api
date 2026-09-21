@@ -24,12 +24,21 @@ import time
 from psycopg2 import errors as pg_errors
 
 from app.langchain.alwaraq_lib import book_names, db, prompts, retrieval, search_index
-from app.langchain.alwaraq_lib.normalize import detect_language
-from app.langchain.alwaraq_lib.verify import strip_unknown_markers, verify_answer
+from app.langchain.alwaraq_lib.normalize import detect_language, literal_terms
+from app.langchain.alwaraq_lib.verify import (
+    strip_unknown_markers,
+    verify_answer,
+    verify_composition,
+)
 from app.memory import repository as memory_repository
 from app.memory import service as memory_service
 
 MEMORY_DOMAIN = "alwaraq"
+
+# Questions that ask to be written for, not cited to. These are answered in
+# "composed" mode: the library's own books are the material, the piece is ours.
+GENERATIVE_INTENTS = {"compose", "reading_plan"}
+INTENTS = {"fact", "trace", "compare", "reading_plan", "earliest_use", "define", "compose", "other"}
 
 MAIN_MODEL = os.getenv("ALWARAQ_MAIN_MODEL", "gpt-4o")
 FAST_MODEL = os.getenv("ALWARAQ_FAST_MODEL", "gpt-4o-mini")
@@ -38,6 +47,14 @@ ROUTE_TOP_BOOKS = int(os.getenv("ALWARAQ_ROUTE_TOP_BOOKS", "8"))
 RERANK_CANDIDATES = int(os.getenv("ALWARAQ_RERANK_CANDIDATES", "30"))
 PER_BOOK_CAP = 4
 PERMALINK_TEMPLATE = os.getenv("ALWARAQ_PERMALINK_TEMPLATE", "")  # e.g. https://…?bookId={book_id}&page={page}
+# How many of the session's previous library answers contribute pinned books.
+SESSION_BOOK_LOOKBACK = int(os.getenv("ALWARAQ_SESSION_BOOK_LOOKBACK", "3"))
+# Seconds an answer waits for the names of the books it searched. The upstream
+# endpoint builds the whole book before sending a byte (~7s to first byte), so
+# waiting is a poor trade and the default is not to: the lookups still start,
+# in parallel, and land within seconds — in time for the next question. Fill the
+# catalogue ahead of time instead (backfill_book_names) and none of this runs.
+NAME_BUDGET_S = float(os.getenv("ALWARAQ_NAME_BUDGET_S", "0"))
 
 _llms: dict = {}
 _llm_lock = threading.Lock()
@@ -78,7 +95,9 @@ def _invoke_json(model: str, prompt: str, usage: dict) -> dict:
 # ── Steps ────────────────────────────────────────────────────────────────────
 
 
-def _understand(question: str, history: str, library_scope: bool, usage: dict) -> dict:
+def _understand(
+    question: str, history: str, library_scope: bool, usage: dict, open_book_title: str | None = None
+) -> dict:
     fallback = {
         "standalone_question": question,
         "language": detect_language(question),
@@ -88,9 +107,11 @@ def _understand(question: str, history: str, library_scope: bool, usage: dict) -
         "sub_queries": [question],
         "keywords": [],
         "candidate_books": [],
+        "about_open_book": False,
     }
     prompt = prompts.UNDERSTAND_PROMPT.format(
         history_block=prompts.history_block(history),
+        open_book_block=prompts.open_book_block(open_book_title),
         question=question,
         scope_description=(
             "the whole library (books must be chosen)" if library_scope else "a single book chosen by the user"
@@ -111,6 +132,8 @@ def _understand(question: str, history: str, library_scope: bool, usage: dict) -
             out[key] = data[key]
     out["standalone_question"] = str(out["standalone_question"]).strip() or question
     out["language"] = out["language"] if out["language"] in ("ar", "en") else fallback["language"]
+    out["intent"] = out["intent"] if out["intent"] in INTENTS else "other"
+    out["about_open_book"] = bool(out["about_open_book"]) and bool(open_book_title)
     for key in ("entities", "sub_queries", "keywords", "candidate_books"):
         out[key] = [str(x) for x in out[key] if str(x).strip()] if isinstance(out[key], list) else []
     return out
@@ -168,6 +191,20 @@ def _compose(question: str, history: str, language: str, passages: list[dict], u
     return _invoke_json(MAIN_MODEL, prompt, usage)
 
 
+def _compose_piece(
+    question: str, history: str, language: str, passages: list[dict], books: list[dict], usage: dict
+) -> dict:
+    """Write what the reader asked for, out of the library's own books."""
+    prompt = prompts.COMPOSITION_PROMPT.format(
+        answer_language_name=prompts.LANGUAGE_NAMES.get(language, "Arabic"),
+        history_block=prompts.history_block(history),
+        question=question,
+        books_block=prompts.books_block(books),
+        passages=prompts.format_passages(passages, label_key="label", max_chars=2500),
+    )
+    return _invoke_json(MAIN_MODEL, prompt, usage)
+
+
 # ── Formatting ───────────────────────────────────────────────────────────────
 
 
@@ -182,16 +219,37 @@ def _book_meta(document_id: str, language: str) -> dict:
     return {"book_id": info.get("book_id") or document_id, "book": title or document_id, "author": author}
 
 
+def _book_name(document_id: str, language: str) -> str | None:
+    info = retrieval.get_book_info(document_id)
+    if not info:
+        return None
+    if language == "en":
+        return info.get("title_en") or info.get("title_ar")
+    return info.get("title_ar") or info.get("title_en")
+
+
+def ensure_book_names(document_ids: list[str], language: str) -> None:
+    """
+    Start the lookup for any of these books whose name is not in the catalogue.
+
+    They are fetched in parallel and, with the default budget of 0, nothing is
+    waited for: this answer still shows the bare ids, the next one shows names.
+    Raise ALWARAQ_NAME_BUDGET_S to let the answer wait (about 10s covers a
+    library-scope set of 8), or fill the catalogue in advance instead.
+    """
+    missing = [d for d in dict.fromkeys(document_ids) if not _book_name(d, language)]
+    if not missing:
+        return
+    saved = book_names.ensure_names(missing, NAME_BUDGET_S, retrieval.invalidate_catalogue)
+    retrieval.invalidate_catalogue()
+    print(f"[alwaraq] Book names: {len(missing)} missing, {saved} resolved within {NAME_BUDGET_S}s")
+
+
 def _book_refs(document_ids: list[str], language: str) -> list[dict]:
-    """[{"bookId", "bookName"}]; unknown names are null and looked up in the background."""
+    """[{"bookId", "bookName"}]; a name still missing is looked up in the background."""
     refs, missing = [], []
     for doc_id in document_ids:
-        info = retrieval.get_book_info(doc_id)
-        name = None
-        if info:
-            name = (info.get("title_en") or info.get("title_ar")) if language == "en" else (
-                info.get("title_ar") or info.get("title_en")
-            )
+        name = _book_name(doc_id, language)
         if not name:
             missing.append(doc_id)
         refs.append({"bookId": doc_id, "bookName": name})
@@ -242,6 +300,38 @@ def _compact_for_memory(summary: str, sources: dict) -> str:
     return f"{text}\nSources: {'; '.join(refs)}" if refs else text
 
 
+def recent_session_books(session_token: str | None) -> list[str]:
+    """
+    Books that answered this session's recent library questions.
+
+    Routing otherwise starts from scratch every turn, so a follow-up ("who
+    wrote it?") can be routed away from the very book that supplied the quote
+    it is asking about. These books are kept in the routed set.
+    """
+    if not session_token:
+        return []
+    try:
+        rows = db.fetch_all(
+            """
+            SELECT answer -> 'books_cited' AS books
+            FROM alwaraq_query_log
+            WHERE session_token = %s AND document_id IS NULL
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (session_token, SESSION_BOOK_LOOKBACK),
+        )
+    except Exception as e:  # a cold log table must not stop an answer
+        print(f"[alwaraq] Recent-session books unavailable: {e}")
+        return []
+    out: list[str] = []
+    for row in rows:
+        for book in row.get("books") or []:
+            if isinstance(book, str) and book and book not in out:
+                out.append(book)
+    return out
+
+
 # ── Logging ──────────────────────────────────────────────────────────────────
 
 
@@ -283,6 +373,7 @@ def answer_question(
     session_token: str | None = None,
     lang: str | None = None,
     max_sources: int | None = None,
+    context_book_id: str | None = None,
 ) -> tuple[dict, int]:
     started = time.time()
     usage = {"tokens_in": 0, "tokens_out": 0}
@@ -296,6 +387,9 @@ def answer_question(
 
     query = (query or "").strip()
     document_id = (document_id or "").strip() or None
+    # The book the reader has open, even when they are searching the whole
+    # library. Without it "this novel" has no referent at all.
+    context_book_id = (context_book_id or "").strip() or None
     max_sources = max(1, min(int(max_sources or MAX_PASSAGES), 20))
     library_scope = document_id is None
 
@@ -312,31 +406,53 @@ def answer_question(
                 print(f"[alwaraq] Memory load failed, answering statelessly: {e}")
 
         # ── 1. Understand ─────────────────────────────────────────────────────
-        understanding = _understand(query, history, library_scope, usage)
+        open_book_title = (
+            _book_meta(context_book_id, detect_language(query))["book"] if context_book_id else None
+        )
+        understanding = _understand(query, history, library_scope, usage, open_book_title)
         _lap("understand")
         standalone = understanding["standalone_question"]
         # Detected in code: the LLM is unreliable at reporting the question's language.
         language = lang if lang in ("ar", "en") else detect_language(query)
-        print(f"[alwaraq] Standalone question: {standalone!r} | scope={'library' if library_scope else document_id}")
+        # Asking to be written for ("a two-line hook for this novel") is not asking
+        # what a text says: composed mode writes from the books instead of citing them.
+        mode = "composed" if understanding["intent"] in GENERATIVE_INTENTS else "evidence"
+        # "this novel" means the book on the reader's screen, whatever the scope toggle says.
+        scope_book = document_id or (context_book_id if understanding["about_open_book"] else None)
+        library_scope = scope_book is None
+        print(f"[alwaraq] Standalone question: {standalone!r} | scope={'library' if library_scope else scope_book}"
+              f" | intent={understanding['intent']} | mode={mode}")
 
         # ── 2. Scope ─────────────────────────────────────────────────────────
         search_index.maybe_sync_in_background()
+        # Titles and names exactly as the reader typed them. The rewrite step
+        # translates a title ("Three Essays On America" -> "ثلاث مقالات عن
+        # أمريكا") and the one string that occurs verbatim in the text is lost,
+        # so it is carried to search and routing separately — and first, since
+        # it is the most distinctive term available.
+        literals = literal_terms(query)
+        if literals:
+            print(f"[alwaraq] Literal terms from the question: {literals}")
         if library_scope:
             route_queries = [standalone]
             route_vecs = [db.to_vector_literal(v) for v in retrieval.embed(route_queries)]
             books_searched = retrieval.route_books(
                 route_vecs,
-                names=understanding["candidate_books"] + understanding["entities"],
+                names=understanding["candidate_books"] + understanding["entities"] + literals,
                 keywords=understanding["keywords"],
                 top_n=ROUTE_TOP_BOOKS,
-                entities=understanding["entities"],
+                entities=understanding["entities"] + literals,
+                # the open book first: a library-wide question asked while reading
+                # something is usually still partly about what is on the screen
+                pinned=([context_book_id] if context_book_id else []) + recent_session_books(session_token),
             )
             if not books_searched:
                 raise AlwaraqError("No books could be selected for this question.", 404)
         else:
-            if not retrieval.book_exists(document_id):
-                raise AlwaraqError(f"No content found for document_id={document_id}.", 404)
-            books_searched = [document_id]
+            if not retrieval.book_exists(scope_book):
+                raise AlwaraqError(f"No content found for document_id={scope_book}.", 404)
+            books_searched = [scope_book]
+        ensure_book_names(books_searched, language)
         _lap("scope")
         print(f"[alwaraq] Books searched: {books_searched}")
 
@@ -347,7 +463,7 @@ def answer_question(
         candidates = retrieval.retrieve(
             books_searched,
             queries,
-            understanding["keywords"] + understanding["entities"],
+            literals + understanding["keywords"] + understanding["entities"],
             per_query_limit=40 if not library_scope else 20,
             include_global_passages=library_scope,
             limit=RERANK_CANDIDATES,
@@ -357,8 +473,13 @@ def answer_question(
         # ── 4. Rerank & select ───────────────────────────────────────────────
         selected = []
         if candidates:
-            _rerank(standalone, candidates, usage)
+            # Relevance grading asks "does this passage answer the question", which
+            # nothing does when the question is "write me a hook": in composed mode
+            # the best-fused passages are the material, ungraded.
+            if mode == "evidence":
+                _rerank(standalone, candidates, usage)
             selected = select_passages(candidates, max_sources, PER_BOOK_CAP if library_scope else None)
+            selected = retrieval.expand_neighbours(selected)
         _lap("rerank")
 
         passages_by_label = {}
@@ -371,7 +492,11 @@ def answer_question(
         verified = {"sections": [], "disagreements": [], "cited_labels": [], "quote_info": {},
                     "dropped": {}, "has_evidence": False}
         composed = {}
-        if selected:
+        if selected and mode == "composed":
+            books = [_book_meta(doc, language) for doc in dict.fromkeys(p["document_id"] for p in selected)]
+            composed = _compose_piece(standalone, history, language, selected, books, usage)
+            verified = verify_composition(composed, passages_by_label)
+        elif selected:
             composed = _compose(standalone, history, language, selected, usage)
             verified = verify_answer(composed, passages_by_label)
         _lap("compose")
@@ -385,13 +510,17 @@ def answer_question(
                 for label in verified["cited_labels"]
             }
             confidences = [c["confidence"] for s in verified["sections"] for c in s["claims"]]
-            overall = "confirmed" if confidences and all(c == "confirmed" for c in confidences) else (
-                "probable" if "confirmed" in confidences or "probable" in confidences else "uncertain"
-            )
+            if mode == "composed":
+                overall = None  # our own writing, not a graded claim about a text
+            else:
+                overall = "confirmed" if confidences and all(c == "confirmed" for c in confidences) else (
+                    "probable" if "confirmed" in confidences or "probable" in confidences else "uncertain"
+                )
             follow_ups = [str(f) for f in (composed.get("follow_ups") or [])][:3]
         else:
             status = "no_evidence"
-            summary = prompts.NO_EVIDENCE_MESSAGE.get(language, prompts.NO_EVIDENCE_MESSAGE["ar"])
+            messages = prompts.NO_MATERIAL_MESSAGE if mode == "composed" else prompts.NO_EVIDENCE_MESSAGE
+            summary = messages.get(language, messages["ar"])
             if composed.get("no_evidence") and composed.get("summary"):
                 summary = f"{summary} {strip_unknown_markers(str(composed['summary']), set())}"
             # Show the closest passages found so the reader can judge for themselves.
@@ -420,9 +549,19 @@ def answer_question(
                 "session_token": session_token,
                 "endpoint": "answer",
                 "question": query,
-                "document_id": document_id,
+                "document_id": scope_book,
                 "retrieved_ids": [p["key"] for p in candidates],
-                "answer": {"status": status, "answer": answer, "sources": list(sources)},
+                "answer": {
+                    "status": status,
+                    "answer": answer,
+                    "sources": list(sources),
+                    # Only books that actually answered; "closest passages" from a
+                    # no-evidence turn must not steer the next turn's routing.
+                    "books_cited": (
+                        list(dict.fromkeys(s["document_id"] for s in sources.values()))
+                        if status == "ok" else []
+                    ),
+                },
                 "confidence": overall,
                 "latency_ms": latency_ms,
                 **usage,
@@ -445,8 +584,9 @@ def answer_question(
         return {
             "status": status,
             "query_id": query_id,
-            "document_id": document_id,
+            "document_id": scope_book,
             "scope": "library" if library_scope else "book",
+            "answer_mode": mode,
             "books_searched": _book_refs(books_searched, language),
             "question": query,
             "standalone_question": standalone,
@@ -554,6 +694,26 @@ def register_books(books: list[dict]) -> int:
 
 def build_profiles(document_ids: list[str] | None = None) -> dict:
     return retrieval.build_profiles(document_ids)
+
+
+def backfill_book_names(limit: int | None = None) -> dict:
+    """
+    Fetch a catalogue name for every Alwaraq book in `books` that has none.
+
+    Run once and answers stop showing bare ids. Reads `books`; writes only to
+    alwaraq_books. Takes a while: one HTTP call per book, 8 at a time.
+    """
+    rows = db.fetch_all("SELECT DISTINCT bookid FROM books")
+    all_books = [r["bookid"] for r in rows if retrieval.is_library_book(r["bookid"])]
+    missing = [b for b in all_books if not retrieval.get_book_info(b)]
+    if limit:
+        missing = missing[:limit]
+    print(f"[alwaraq] Book name backfill: {len(missing)} of {len(all_books)} books have no catalogue entry")
+    saved = book_names.ensure_names(missing, budget_s=None, on_saved=lambda: None)
+    retrieval.invalidate_catalogue()
+    result = {"books": len(all_books), "missing": len(missing), "saved": saved}
+    print(f"[alwaraq] Book name backfill done: {result}")
+    return result
 
 
 # ── Keyword search index ─────────────────────────────────────────────────────

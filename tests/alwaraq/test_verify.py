@@ -1,6 +1,7 @@
 import unittest
 
 from app.langchain.alwaraq_lib.verify import (
+    verify_composition,
     locate_quote,
     strip_unknown_markers,
     verify_answer,
@@ -116,6 +117,34 @@ class VerifyAnswerTest(unittest.TestCase):
 
     def test_strip_unknown_markers(self):
         self.assertEqual(strip_unknown_markers("a [P1] b [P9] c", {"P1"}), "a [P1] b c")
+
+
+class VerifyCompositionTest(unittest.TestCase):
+    """A composed piece is our writing: lines need no citation, quotes still do."""
+
+    def test_uncited_lines_are_kept(self):
+        composed = {"summary": "two lines", "sections": [{"heading": "", "claims": [
+            {"text": "a line the assistant wrote"}]}]}
+        result = verify_composition(composed, _passages())
+        self.assertTrue(result["has_evidence"])
+        claim = result["sections"][0]["claims"][0]
+        self.assertEqual(claim["confidence"], "composed")
+        self.assertEqual(claim["citations"], [])
+
+    def test_a_quote_that_is_not_in_the_passage_is_dropped(self):
+        composed = {"summary": "s", "sections": [{"heading": "", "claims": [
+            {"text": "a line", "quotes": [{"passage": "P1", "text": "كلام لم يرد في أي نص من النصوص"}]}]}]}
+        result = verify_composition(composed, _passages())
+        self.assertEqual(result["sections"][0]["claims"][0]["quotes"], [])
+        self.assertEqual(result["dropped"]["quotes"], 1)
+        self.assertTrue(result["has_evidence"])  # the line survives, the invention does not
+
+    def test_a_summary_alone_is_a_valid_piece(self):
+        self.assertTrue(verify_composition({"summary": "a two line hook"}, _passages())["has_evidence"])
+
+    def test_nothing_written_is_not_a_piece(self):
+        self.assertFalse(verify_composition({"summary": "   ", "sections": []}, _passages())["has_evidence"])
+        self.assertFalse(verify_composition({"summary": "x", "no_evidence": True}, _passages())["has_evidence"])
 
 
 if __name__ == "__main__":

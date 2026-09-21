@@ -84,6 +84,79 @@ def strip_unknown_markers(text: str, known_labels: set[str]) -> str:
     return re.sub(r"\s{2,}", " ", _MARKER_RE.sub(_sub, text or "")).strip()
 
 
+def verify_composition(composed: dict, passages_by_label: dict[str, dict]) -> dict:
+    """
+    Verification for a composed piece (a hook, a blurb, a recommendation).
+
+    The reader asked to be written for, not cited to, so a line standing on its
+    own is expected here and is kept. A *quote* is still an assertion about what
+    a book says, so quotes are checked exactly as strictly as anywhere else:
+    anything not found in the passage it names is dropped.
+    """
+    known = set(passages_by_label)
+    dropped = {"claims": 0, "quotes": 0, "citations": 0}
+    cited: list[str] = []
+    quote_info: dict[str, list[dict]] = {}
+    sections_out = []
+
+    for section in composed.get("sections") or []:
+        claims_out = []
+        for claim in section.get("claims") or []:
+            if not isinstance(claim, dict) or not str(claim.get("text", "")).strip():
+                continue
+            raw_citations = [str(c).strip() for c in claim.get("citations") or []]
+            valid = [c for c in dict.fromkeys(raw_citations) if c in known]
+            dropped["citations"] += len(raw_citations) - len(valid)
+
+            quotes_out = []
+            for q in claim.get("quotes") or []:
+                if not isinstance(q, dict):
+                    continue
+                label = str(q.get("passage", "")).strip()
+                text = str(q.get("text", "")).strip()
+                if label not in known or not text:
+                    dropped["quotes"] += 1
+                    continue
+                found = locate_quote(text, passages_by_label[label]["text"])
+                if not found:
+                    dropped["quotes"] += 1
+                    continue
+                before, after = context_around(text, passages_by_label[label]["text"])
+                quotes_out.append({"passage": label, "text": text, "verbatim": found["verbatim"]})
+                quote_info.setdefault(label, []).append(
+                    {
+                        "text": text,
+                        "verbatim": found["verbatim"],
+                        "context_before": before,
+                        "context_after": after,
+                    }
+                )
+                if label not in valid:
+                    valid.append(label)
+
+            cited.extend(valid)
+            claims_out.append(
+                {
+                    "text": strip_unknown_markers(str(claim["text"]), known),
+                    "confidence": "composed",
+                    "citations": valid,
+                    "quotes": quotes_out,
+                }
+            )
+        if claims_out:
+            sections_out.append({"heading": str(section.get("heading") or "").strip(), "claims": claims_out})
+
+    has_text = bool(str(composed.get("summary") or "").strip()) or bool(sections_out)
+    return {
+        "sections": sections_out,
+        "disagreements": [],
+        "cited_labels": list(dict.fromkeys(cited)),
+        "quote_info": quote_info,
+        "dropped": dropped,
+        "has_evidence": has_text and not composed.get("no_evidence", False),
+    }
+
+
 def verify_answer(composed: dict, passages_by_label: dict[str, dict]) -> dict:
     """
     Returns:

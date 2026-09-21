@@ -17,7 +17,7 @@ def _cand(key, text, doc="ib"):
     }
 
 
-def fake_llm(understanding=None, scores=None, composed=None):
+def fake_llm(understanding=None, scores=None, composed=None, piece=None):
     """Return a fake _invoke_json that answers by prompt type and records prompts."""
     calls = []
 
@@ -34,6 +34,13 @@ def fake_llm(understanding=None, scores=None, composed=None):
             }
         if "grading passages" in prompt:
             return {"scores": scores or {"C1": 3, "C2": 1}}
+        if "asking you to WRITE something" in prompt:
+            return piece or {
+                "no_evidence": False,
+                "summary": "مدينة على البحر، ومرسى لا يشبهه مرسى.",
+                "sections": [{"heading": "", "claims": [{"text": "رحلة تبدأ حيث ينتهي العالم المعروف."}]}],
+                "follow_ups": [],
+            }
         return composed or {
             "no_evidence": False,
             "summary": "وصف ابن بطوطة مدن الصين بالعظمة [P1].",
@@ -52,7 +59,7 @@ def fake_llm(understanding=None, scores=None, composed=None):
     return _invoke, calls
 
 
-class PipelineTest(unittest.TestCase):
+class _PipelineBase(unittest.TestCase):
     def setUp(self):
         self.patches = [
             mock.patch.object(retrieval, "get_book_info", return_value={
@@ -73,6 +80,8 @@ class PipelineTest(unittest.TestCase):
     def tearDown(self):
         mock.patch.stopall()
 
+
+class PipelineTest(_PipelineBase):
     def test_book_scope_cited_answer(self):
         invoke, _ = fake_llm()
         with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
@@ -212,6 +221,185 @@ class PipelineTest(unittest.TestCase):
     def test_empty_query(self):
         data, status = alwaraq.answer_question("   ")
         self.assertEqual(status, 400)
+
+    # ── a title the reader typed survives the Arabic rewrite ─────────────────
+
+    def test_title_as_typed_is_searched_and_routed_on(self):
+        """The rewrite translates the title; the English one is what the text quotes."""
+        invoke, _ = fake_llm(understanding={
+            "standalone_question": "من هو مؤلف ثلاث مقالات عن أمريكا؟",
+            "language": "en", "sub_queries": ["مقالات عن أمريكا"],
+            "keywords": ["أمريكا"], "entities": [], "candidate_books": [],
+        })
+        with mock.patch.object(retrieval, "route_books", return_value=["3066"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=[]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("who is the author of Three Essays On America")
+
+        keywords = self.retrieve.call_args.args[2]
+        self.assertEqual(keywords[0], "Three Essays On America")  # first, so it is never trimmed
+        self.assertIn("أمريكا", keywords)
+        self.assertIn("Three Essays On America", route.call_args.kwargs["entities"])
+        self.assertIn("Three Essays On America", route.call_args.kwargs["names"])
+
+    def test_question_without_a_title_adds_no_literal_terms(self):
+        invoke, _ = fake_llm()
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("suggest a good book in english", document_id="ib")
+        self.assertEqual(self.retrieve.call_args.args[2], ["الصين", "ابن بطوطة"])
+
+    # ── follow-ups stay with the book that answered ──────────────────────────
+
+    def test_books_cited_last_turn_are_pinned_for_the_next_one(self):
+        invoke, _ = fake_llm()
+        with mock.patch.object(retrieval, "route_books", return_value=["3066"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=["3066"]) as recent, \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("ومن مؤلفه؟", session_token="tok")
+        recent.assert_called_once_with("tok")
+        self.assertEqual(route.call_args.kwargs["pinned"], ["3066"])
+
+    def test_answered_books_are_logged_for_the_next_turn(self):
+        invoke, _ = fake_llm()
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("سؤال", document_id="ib")
+        logged = alwaraq._log_query.call_args.args[0]["answer"]
+        self.assertEqual(logged["status"], "ok")
+        self.assertEqual(logged["books_cited"], ["ib"])
+
+    def test_a_no_evidence_turn_pins_nothing(self):
+        invoke, _ = fake_llm(scores={"C1": 0, "C2": 0})
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("سؤال", document_id="ib")
+        logged = alwaraq._log_query.call_args.args[0]["answer"]
+        self.assertEqual(logged["status"], "no_evidence")
+        self.assertEqual(logged["books_cited"], [])  # "closest passages" are not evidence
+
+    # ── the composer reads across chunk boundaries ───────────────────────────
+
+    def test_selected_passages_are_widened_before_composing(self):
+        invoke, _ = fake_llm()
+        with mock.patch.object(retrieval, "expand_neighbours", side_effect=lambda ps, *a: ps) as expand, \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("سؤال", document_id="ib")
+        expand.assert_called_once()
+        self.assertEqual([p["key"] for p in expand.call_args.args[0]], ["k1"])  # only what was selected
+
+    def test_composer_is_told_which_book_each_passage_comes_from(self):
+        invoke, calls = fake_llm()
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("سؤال", document_id="ib")
+        compose_prompt = calls[-1]
+        self.assertIn("from the library book: تحفة النظار", compose_prompt)
+        self.assertIn("not a book in this library", compose_prompt)
+
+
+class ComposedModeTest(_PipelineBase):
+    """Asking to be written for ("a hook for this novel") is not asking what a text says."""
+
+    WRITE = "make a 2 lined sentence that will attract a teen girl to read this novel"
+
+    def _understanding(self, intent="compose", about_open_book=True):
+        return {
+            "standalone_question": self.WRITE, "language": "en", "intent": intent,
+            "about_open_book": about_open_book, "sub_queries": ["مغامرات"],
+            "keywords": ["مغامرة"], "entities": [], "candidate_books": [],
+        }
+
+    def test_this_novel_resolves_to_the_open_book(self):
+        invoke, calls = fake_llm(understanding=self._understanding())
+        with mock.patch.object(retrieval, "route_books") as route, \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, status = alwaraq.answer_question(self.WRITE, context_book_id="91370")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["answer_mode"], "composed")
+        self.assertEqual(data["scope"], "book")          # not routed across the library
+        self.assertEqual(data["document_id"], "91370")
+        self.assertEqual(self.retrieve.call_args.args[0], ["91370"])
+        route.assert_not_called()
+        self.assertIn("currently has this book open", calls[0])  # the understand step is told
+
+    def test_the_piece_is_returned_and_marked_as_ours(self):
+        invoke, _ = fake_llm(understanding=self._understanding())
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question(self.WRITE, context_book_id="91370")
+        self.assertEqual(data["answer"]["summary"], "مدينة على البحر، ومرسى لا يشبهه مرسى.")
+        self.assertIsNone(data["answer"]["confidence"])  # not a graded claim about a text
+        claim = data["answer"]["sections"][0]["claims"][0]
+        self.assertEqual(claim["confidence"], "composed")
+        self.assertEqual(claim["citations"], [])        # an uncited line survives here
+
+    def test_nothing_is_graded_for_relevance(self):
+        """Rerank asks "does this answer the question" — nothing does, and it used to empty the pool."""
+        invoke, calls = fake_llm(understanding=self._understanding())
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question(self.WRITE, context_book_id="91370")
+        self.assertEqual(data["status"], "ok")
+        self.assertFalse(any("grading passages" in c for c in calls))
+
+    def test_invented_quotes_are_still_dropped(self):
+        piece = {
+            "summary": "hook",
+            "sections": [{"heading": "", "claims": [{
+                "text": "a line", "quotes": [{"passage": "P1", "text": "كلام مخترع تماما لا وجود له"}]}]}],
+        }
+        invoke, _ = fake_llm(understanding=self._understanding(), piece=piece)
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question(self.WRITE, context_book_id="91370")
+        self.assertEqual(data["status"], "ok")          # the writing stands
+        self.assertEqual(data["answer"]["sections"][0]["claims"][0]["quotes"], [])  # the quote does not
+
+    def test_a_recommendation_stays_library_wide_and_lists_only_real_books(self):
+        invoke, calls = fake_llm(understanding=self._understanding(intent="reading_plan", about_open_book=False))
+        with mock.patch.object(retrieval, "route_books", return_value=["ib"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=[]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question("suggest a good book for a 15 year old girl",
+                                              context_book_id="91370")
+        self.assertEqual(data["answer_mode"], "composed")
+        self.assertEqual(data["scope"], "library")
+        self.assertEqual(route.call_args.kwargs["pinned"], ["91370"])  # open book still pinned
+        self.assertIn("- تحفة النظار — ابن بطوطة", calls[-1])  # only books the library holds
+        self.assertIn("not a book this library holds", calls[-1])
+
+    def test_an_evidence_question_is_untouched_by_an_open_book(self):
+        invoke, _ = fake_llm(understanding={
+            "standalone_question": "من هو ابن جزي؟", "language": "ar", "intent": "fact",
+            "about_open_book": False, "sub_queries": ["ابن جزي"], "keywords": ["ابن جزي"],
+            "entities": [], "candidate_books": [],
+        })
+        with mock.patch.object(retrieval, "route_books", return_value=["ib"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=["3066"]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question("من هو ابن جزي؟", context_book_id="91370")
+        self.assertEqual(data["answer_mode"], "evidence")
+        self.assertEqual(data["scope"], "library")
+        self.assertEqual(route.call_args.kwargs["pinned"], ["91370", "3066"])
+
+    def test_no_material_says_so_in_its_own_words(self):
+        self.retrieve.return_value = []
+        invoke, _ = fake_llm(understanding=self._understanding())
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question(self.WRITE, context_book_id="91370")
+        self.assertEqual(data["status"], "no_evidence")
+        self.assertIn("not enough text", data["answer"]["summary"])
+
+
+class RecentSessionBooksTest(unittest.TestCase):
+    def test_reads_books_cited_newest_first(self):
+        rows = [{"books": ["3066", "4001"]}, {"books": ["4001", "298"]}, {"books": None}]
+        with mock.patch.object(alwaraq.db, "fetch_all", return_value=rows) as fa:
+            self.assertEqual(alwaraq.recent_session_books("tok"), ["3066", "4001", "298"])
+        sql, params = fa.call_args.args
+        self.assertIn("document_id IS NULL", sql)  # library-scope turns only
+        self.assertEqual(params[0], "tok")
+
+    def test_no_session_and_db_failure_are_both_harmless(self):
+        self.assertEqual(alwaraq.recent_session_books(None), [])
+        with mock.patch.object(alwaraq.db, "fetch_all", side_effect=RuntimeError("no table")):
+            self.assertEqual(alwaraq.recent_session_books("tok"), [])
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ from app.langchain.alwaraq_lib.normalize import (
     FOLD_TO,
     REMOVED_CHARS,
     normalize_arabic,
+    spelling_variants,
 )
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -43,6 +44,10 @@ KEYWORD_WEIGHT = 2.5
 # names/places are what the reader asked about), up to a third of the pool.
 KEYWORD_RESERVED = 8
 SEARCH_CONCURRENCY = int(os.getenv("ALWARAQ_SEARCH_CONCURRENCY", "4"))
+# Chunks are cut mid-sentence, so the sentence that names a work and the one
+# that names its author often land in different chunks. Selected passages are
+# widened with this many characters from the chunk on either side. 0 disables.
+NEIGHBOUR_CHARS = int(os.getenv("ALWARAQ_NEIGHBOUR_CHARS", "600"))
 
 _model = None
 _model_lock = threading.Lock()
@@ -97,14 +102,34 @@ def prepare_keywords(keywords: list[str], max_keywords: int = 8) -> list[str]:
     return out
 
 
+def keyword_groups(keywords: list[str], max_keywords: int = 8) -> list[list[str]]:
+    """
+    One group of accepted spellings per keyword; a hit on any spelling in a
+    group counts as a hit for that keyword (see normalize.spelling_variants).
+    """
+    return [spelling_variants(kw) for kw in prepare_keywords(keywords, max_keywords)]
+
+
+def _group_match_sql(column: str, groups: list[list[str]]) -> tuple[list[str], list[str]]:
+    """(one `(col ILIKE .. OR ..)` expression per group, patterns in order)."""
+    exprs, patterns = [], []
+    for group in groups:
+        exprs.append("(" + " OR ".join(f"{column} ILIKE %s" for _ in group) + ")")
+        patterns.extend(_like_pattern(v) for v in group)
+    return exprs, patterns
+
+
 def _books_key(document_id: str, text: str) -> str:
     digest = hashlib.md5(f"{document_id}\x00{text}".encode("utf-8")).hexdigest()[:16]
     return f"b:{digest}"
 
 
-def _books_passage(document_id: str, text: str, score: float | None = None) -> dict:
+def _books_passage(
+    document_id: str, text: str, score: float | None = None, chunk_id: int | None = None
+) -> dict:
     return {
         "key": _books_key(document_id, text),
+        "chunk_id": chunk_id,
         "document_id": document_id,
         "text": text,
         "source": "books",
@@ -207,7 +232,9 @@ def vector_search_books(
     lists = []
     for i in range(n):
         hits = sorted((r for r in rows if r[f"r{i}"] <= per_book_limit), key=lambda r: r[f"d{i}"])
-        lists.append([_books_passage(r["bookid"], r["text_content"], 1 - float(r[f"d{i}"])) for r in hits])
+        lists.append(
+            [_books_passage(r["bookid"], r["text_content"], 1 - float(r[f"d{i}"]), r["id"]) for r in hits]
+        )
     return lists
 
 
@@ -220,10 +247,14 @@ def keyword_search_books(document_ids: list[str], keywords: list[str], per_book_
     """
     if not document_ids or not keywords:
         return []
+    groups = keyword_groups(keywords)
+    if not groups:
+        return []
     if search_index.is_ready():
-        return _keyword_search_indexed(document_ids, keywords, per_book_limit)
-    n = len(keywords)
-    match_cols = ", ".join(f"(norm LIKE %s)::int AS m{i}" for i in range(n))
+        return _keyword_search_indexed(document_ids, groups, per_book_limit)
+    n = len(groups)
+    group_exprs, group_patterns = _group_match_sql("norm", groups)
+    match_cols = ", ".join(f"{expr}::int AS m{i}" for i, expr in enumerate(group_exprs))
     df_cols = ", ".join(f"SUM(m{i}) AS d{i}" for i in range(n))
     score_expr = " + ".join(f"f.m{i} * LN((w.n + 1.0) / (w.d{i} + 1.0))" for i in range(n))
     any_expr = " + ".join(f"f.m{i}" for i in range(n))
@@ -246,7 +277,7 @@ def keyword_search_books(document_ids: list[str], keywords: list[str], per_book_
                    row_number() OVER (PARTITION BY bookid ORDER BY score DESC) AS rn
             FROM s
         )
-        SELECT t.bookid, t.score, bk.text_content
+        SELECT t.id, t.bookid, t.score, bk.text_content
         FROM t JOIN books bk ON bk.id = t.id
         WHERE t.rn <= %s
         ORDER BY t.score DESC
@@ -254,18 +285,20 @@ def keyword_search_books(document_ids: list[str], keywords: list[str], per_book_
     # translate() folds letter forms and deletes diacritics in one cheap pass:
     # characters in FROM beyond the length of TO are removed.
     params = [FOLD_FROM + REMOVED_CHARS, FOLD_TO, list(document_ids)]
-    params += [_like_pattern(k) for k in keywords]
+    params += group_patterns
     params += [per_book_limit]
     rows = db.fetch_all(sql, params)
-    return [_books_passage(r["bookid"], r["text_content"], float(r["score"])) for r in rows]
+    return [_books_passage(r["bookid"], r["text_content"], float(r["score"]), r["id"]) for r in rows]
 
 
-def _keyword_search_indexed(document_ids: list[str], keywords: list[str], per_book_limit: int) -> list[dict]:
+def _keyword_search_indexed(
+    document_ids: list[str], groups: list[list[str]], per_book_limit: int
+) -> list[dict]:
     """Same scoring as keyword_search_books, using the trigram-indexed alwaraq_chunk_text."""
-    n = len(keywords)
-    patterns = [_like_pattern(k) for k in keywords]
-    match_cols = ", ".join(f"(text_normalized LIKE %s)::int AS m{i}" for i in range(n))
-    any_like = " OR ".join(["text_normalized LIKE %s"] * n)
+    n = len(groups)
+    group_exprs, patterns = _group_match_sql("text_normalized", groups)
+    match_cols = ", ".join(f"{expr}::int AS m{i}" for i, expr in enumerate(group_exprs))
+    any_like = " OR ".join(group_exprs)
     df_cols = ", ".join(f"SUM(m{i}) AS d{i}" for i in range(n))
     score_expr = " + ".join(f"f.m{i} * LN((w.n + 1.0) / (df.d{i} + 1.0))" for i in range(n))
     sql = f"""
@@ -288,14 +321,52 @@ def _keyword_search_indexed(document_ids: list[str], keywords: list[str], per_bo
                    row_number() OVER (PARTITION BY bookid ORDER BY score DESC) AS rn
             FROM s
         )
-        SELECT t.bookid, t.score, bk.text_content
+        SELECT t.id, t.bookid, t.score, bk.text_content
         FROM t JOIN books bk ON bk.id = t.id
         WHERE t.rn <= %s
         ORDER BY t.score DESC
     """
+    # match_cols is in the SELECT list, so its patterns come before the book filter.
     params = patterns + [list(document_ids)] + patterns + [list(document_ids), per_book_limit]
     rows = db.fetch_all(sql, params)
-    return [_books_passage(r["bookid"], r["text_content"], float(r["score"])) for r in rows]
+    return [_books_passage(r["bookid"], r["text_content"], float(r["score"]), r["id"]) for r in rows]
+
+
+def expand_neighbours(passages: list[dict], chars: int | None = None) -> list[dict]:
+    """
+    Widen each `books` passage with text from the chunks either side of it.
+
+    Chunks are cut by length, not by sense: the sentence naming a work and the
+    one naming its author routinely fall in different chunks, which is enough
+    for the composer to answer "the passage does not say". The passage keys and
+    citations are unchanged — only the text the composer reads gets wider.
+    """
+    chars = NEIGHBOUR_CHARS if chars is None else chars
+    targets = [p for p in passages if p.get("source") == "books" and p.get("chunk_id")]
+    if not chars or not targets:
+        return passages
+    wanted = sorted({n for p in targets for n in (p["chunk_id"] - 1, p["chunk_id"] + 1)})
+    try:
+        rows = db.fetch_all(
+            "SELECT id, bookid, text_content FROM books WHERE id = ANY(%s)", (wanted,)
+        )
+    except Exception as e:  # context is a nicety; never fail an answer over it
+        print(f"[alwaraq] Neighbour lookup failed, using passages as they are: {e}")
+        return passages
+    by_id = {r["id"]: r for r in rows}
+    for p in targets:
+        before = by_id.get(p["chunk_id"] - 1)
+        after = by_id.get(p["chunk_id"] + 1)
+        head = (before["text_content"] or "")[-chars:].strip() if _same_book(before, p) else ""
+        tail = (after["text_content"] or "")[:chars].strip() if _same_book(after, p) else ""
+        if head or tail:
+            p["text"] = " ".join(part for part in (head, p["text"], tail) if part)
+            p["neighbour_context"] = True
+    return passages
+
+
+def _same_book(row: dict | None, passage: dict) -> bool:
+    return bool(row) and row["bookid"] == passage["document_id"]
 
 
 # ── Search: alwaraq_passages (page-level) ────────────────────────────────────
@@ -325,9 +396,12 @@ def vector_search_passages(book_ids: list[str] | None, vector_literal: str, limi
 def keyword_search_passages(book_ids: list[str] | None, keywords: list[str], limit: int) -> list[dict]:
     if not keywords:
         return []
-    score_expr = " + ".join(["(p.text_normalized LIKE %s)::int"] * len(keywords))
-    any_expr = " OR ".join(["p.text_normalized LIKE %s"] * len(keywords))
-    patterns = [_like_pattern(k) for k in keywords]
+    groups = keyword_groups(keywords)
+    if not groups:
+        return []
+    group_exprs, patterns = _group_match_sql("p.text_normalized", groups)
+    score_expr = " + ".join(f"{expr}::int" for expr in group_exprs)
+    any_expr = " OR ".join(group_exprs)
     where_book = "AND p.book_id = ANY(%s)" if book_ids else ""
     params = patterns + patterns + ([book_ids] if book_ids else []) + [limit]
     rows = _safe_fetch_all(
@@ -564,8 +638,8 @@ def keyword_route(terms: list[str], total_books: int = 2000) -> list[str]:
     if search_index.is_ready():
         return _keyword_route_indexed([normalize_arabic(t) for t in terms], total_books)
     table, column = "books", "text_content"
-    cols = ", ".join(f"SUM(({column} LIKE %s)::int) AS k{i}" for i in range(len(terms)))
-    where = " OR ".join([f"{column} LIKE %s"] * len(terms))
+    cols = ", ".join(f"SUM(({column} ILIKE %s)::int) AS k{i}" for i in range(len(terms)))
+    where = " OR ".join([f"{column} ILIKE %s"] * len(terms))
     patterns = [_like_pattern(t) for t in terms]
     try:
         rows = db.fetch_all(
@@ -587,13 +661,15 @@ def _keyword_route_indexed(terms: list[str], total_books: int) -> list[str]:
     """One capped trigram lookup per term, in parallel; over-common terms are dropped."""
 
     def _hits(term: str) -> dict[str, int] | None:
+        variants = spelling_variants(term)
+        any_like = " OR ".join(["text_normalized ILIKE %s"] * len(variants))
         rows = db.fetch_all(
-            """
+            f"""
             SELECT bookid, COUNT(*) AS hits FROM (
-                SELECT bookid FROM alwaraq_chunk_text WHERE text_normalized LIKE %s LIMIT %s
+                SELECT bookid FROM alwaraq_chunk_text WHERE {any_like} LIMIT %s
             ) s GROUP BY bookid
             """,
-            (_like_pattern(term), KEYWORD_ROUTE_TERM_CAP + 1),
+            tuple(_like_pattern(v) for v in variants) + (KEYWORD_ROUTE_TERM_CAP + 1,),
             settings={"statement_timeout": KEYWORD_ROUTE_TIMEOUT_MS},
         )
         if sum(int(r["hits"]) for r in rows) > KEYWORD_ROUTE_TERM_CAP:
@@ -625,12 +701,16 @@ def _profile_route(query_vector_literal: str, column: str, limit: int) -> list[s
     return [r["legacy_bookid"] for r in rows]
 
 
+PINNED_BOOKS_MAX = int(os.getenv("ALWARAQ_PINNED_BOOKS", "3"))
+
+
 def route_books(
     vector_literals: list[str],
     names: list[str],
     keywords: list[str],
     top_n: int,
     entities: list[str] | None = None,
+    pinned: list[str] | None = None,
 ) -> list[str]:
     """
     Pick the most relevant books for a library-scope question. Signals:
@@ -641,8 +721,11 @@ def route_books(
     No setup is required: keyword + vector routing work on `books` as-is.
     `names` (book titles/authors) are matched against the catalogue only; the
     keyword scan uses `entities` + `keywords`, since titles rarely occur in the text.
+    `pinned` books (e.g. the ones the session already cited) are always kept, so a
+    follow-up question is not routed away from the book that answered the last one.
     """
     entities = entities or []
+    pinned = [b for b in dict.fromkeys(pinned or []) if b][:PINNED_BOOKS_MAX]
     named = _match_named_books(names)
     with ThreadPoolExecutor(max_workers=2) as pool:
         by_vector_f = pool.submit(vector_route, vector_literals)
@@ -651,7 +734,8 @@ def route_books(
         by_centroid = _profile_route(vector_literals[0], "centroid_embedding", top_n * 3) if vector_literals else []
         by_vector = by_vector_f.result()
         by_keyword = by_keyword_f.result()
-    print(f"[alwaraq] Routing: named={named[:5]} keyword={by_keyword[:5]} vector={by_vector[:5]}")
+    print(f"[alwaraq] Routing: named={named[:5]} pinned={pinned} "
+          f"keyword={by_keyword[:5]} vector={by_vector[:5]}")
 
     lists, weights = [], []
     for ranked, weight in ((by_keyword, 1.5), (by_vector, 1.0), (by_profile, 0.5), (by_centroid, 0.5)):
@@ -659,8 +743,9 @@ def route_books(
             lists.append([{"key": b} for b in ranked[: top_n * 3]])
             weights.append(weight)
     fused = rrf_fuse(lists, weights=weights)
-    ordered = list(dict.fromkeys(named + [p["key"] for p in fused]))
-    return ordered[: max(top_n, len(named))]
+    kept = list(dict.fromkeys(named + pinned))
+    ordered = list(dict.fromkeys(kept + [p["key"] for p in fused]))
+    return ordered[: max(top_n, len(kept))]
 
 
 # ── Library scope: building routing profiles (reads `books` only) ────────────

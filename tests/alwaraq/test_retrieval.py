@@ -148,16 +148,76 @@ class KeywordSearchBooksTest(unittest.TestCase):
     def test_indexed_path(self):
         with mock.patch.object(retrieval.search_index, "is_ready", return_value=True), \
              mock.patch.object(retrieval.db, "fetch_all", return_value=[
-                 {"bookid": "67", "score": 2.5, "text_content": "نص"}]) as fa:
+                 {"id": 4321, "bookid": "67", "score": 2.5, "text_content": "نص"}]) as fa:
             out = retrieval.keyword_search_books(["67"], ["مدينه الزيتون"], 10)
         self.assertIn("FROM alwaraq_chunk_text", fa.call_args.args[0])
         self.assertEqual(out[0]["document_id"], "67")
+        self.assertEqual(out[0]["chunk_id"], 4321)  # needed for neighbour context
 
     def test_fallback_path(self):
         with mock.patch.object(retrieval.search_index, "is_ready", return_value=False), \
              mock.patch.object(retrieval.db, "fetch_all", return_value=[]) as fa:
             retrieval.keyword_search_books(["67"], ["مدينه الزيتون"], 10)
         self.assertIn("translate(text_content", fa.call_args.args[0])
+
+    def test_every_spelling_of_a_keyword_is_searched(self):
+        """أمريكا in the question must also match أميركة in an older translation."""
+        with mock.patch.object(retrieval.search_index, "is_ready", return_value=True), \
+             mock.patch.object(retrieval.db, "fetch_all", return_value=[]) as fa:
+            retrieval.keyword_search_books(["3066"], ["أمريكا"], 10)
+        sql, params = fa.call_args.args
+        self.assertIn("%اميركه%", params)
+        self.assertIn("ILIKE", sql)  # Latin titles are matched whatever the casing
+
+    def test_matching_is_case_insensitive(self):
+        with mock.patch.object(retrieval.search_index, "is_ready", return_value=False), \
+             mock.patch.object(retrieval.db, "fetch_all", return_value=[]) as fa:
+            retrieval.keyword_search_books(["3066"], ["Three Essays On America"], 10)
+        sql, params = fa.call_args.args
+        self.assertIn("norm ILIKE", sql)
+        self.assertIn("%Three Essays On America%", params)
+
+
+class ExpandNeighboursTest(unittest.TestCase):
+    """A work and its author routinely sit in different chunks."""
+
+    def _passage(self, chunk_id, doc="3066"):
+        return {"key": "k", "source": "books", "chunk_id": chunk_id, "document_id": doc, "text": "MIDDLE"}
+
+    def test_adds_text_from_the_chunks_either_side(self):
+        rows = [
+            {"id": 9, "bookid": "3066", "text_content": "BEFORE"},
+            {"id": 11, "bookid": "3066", "text_content": "AFTER"},
+        ]
+        with mock.patch.object(retrieval.db, "fetch_all", return_value=rows) as fa:
+            out = retrieval.expand_neighbours([self._passage(10)], chars=100)
+        self.assertEqual(out[0]["text"], "BEFORE MIDDLE AFTER")
+        self.assertEqual(out[0]["key"], "k")  # citation identity is untouched
+        self.assertEqual(sorted(fa.call_args.args[1][0]), [9, 11])
+
+    def test_never_crosses_into_another_book(self):
+        rows = [{"id": 11, "bookid": "OTHER", "text_content": "AFTER"}]
+        with mock.patch.object(retrieval.db, "fetch_all", return_value=rows):
+            out = retrieval.expand_neighbours([self._passage(10)], chars=100)
+        self.assertEqual(out[0]["text"], "MIDDLE")
+
+    def test_window_is_bounded(self):
+        rows = [{"id": 9, "bookid": "3066", "text_content": "x" * 5000}]
+        with mock.patch.object(retrieval.db, "fetch_all", return_value=rows):
+            out = retrieval.expand_neighbours([self._passage(10)], chars=50)
+        self.assertEqual(out[0]["text"], "x" * 50 + " MIDDLE")
+
+    def test_disabled_and_page_level_passages_are_left_alone(self):
+        page = {"key": "p:1", "source": "passages", "document_id": "3066", "text": "PAGE"}
+        with mock.patch.object(retrieval.db, "fetch_all") as fa:
+            self.assertEqual(retrieval.expand_neighbours([page], chars=100)[0]["text"], "PAGE")
+            self.assertEqual(retrieval.expand_neighbours([self._passage(10)], chars=0)[0]["text"], "MIDDLE")
+        fa.assert_not_called()
+
+    def test_lookup_failure_leaves_passages_usable(self):
+        with mock.patch.object(retrieval.db, "fetch_all", side_effect=RuntimeError("db down")):
+            out = retrieval.expand_neighbours([self._passage(10)], chars=100)
+        self.assertEqual(out[0]["text"], "MIDDLE")
 
 
 class ReadOnlyBooksTableTest(unittest.TestCase):
@@ -170,7 +230,8 @@ class ReadOnlyBooksTableTest(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[2]
         files = [root / "app/langchain/alwaraq.py", root / "app/server/alwaraq_routes.py"]
         files += list((root / "app/langchain/alwaraq_lib").glob("*.py"))
-        files += [root / "migrations/002_alwaraq_tables.sql", root / "migrations/003_alwaraq_chunk_text.sql"]
+        files += list((root / "migrations").glob("*_alwaraq_*.sql"))
+        files += list((root / "migrations").glob("*_query_log_*.sql"))
         pattern = re.compile(
             r"(INSERT\s+INTO|UPDATE|DELETE\s+FROM|ALTER\s+TABLE|DROP\s+TABLE|TRUNCATE)\s+books\b",
             re.IGNORECASE,

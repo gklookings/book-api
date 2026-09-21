@@ -34,6 +34,7 @@ def require_admin(token: str = Depends(_oauth2_scheme)) -> str:
 async def alwaraq_answer(
     query: str,
     document_id: str | None = None,
+    context_book_id: str | None = None,
     lang: str | None = None,
     max_sources: int | None = None,
     sessiontoken: str | None = Header(default=None),
@@ -44,8 +45,18 @@ async def alwaraq_answer(
     Query params:
         query:        the question (Arabic or English)            [required]
         document_id:  books.bookid to search one book; omit to search the whole library
+        context_book_id: books.bookid of the book the reader has open, sent even when
+                      searching the whole library. It resolves "this book"/"this novel"
+                      (which then narrows the search to it) and is otherwise kept in the
+                      routed set. Without it such a question has no referent at all.
         lang:         "ar" | "en" answer language (default: language of the query)
         max_sources:  max passages cited (default 12, max 20)
+
+    Response:
+        answer_mode:  "evidence" — every claim cited to a passage (the default), or
+                      "composed" — the reader asked to be written for (a hook, a blurb,
+                      a recommendation), so the answer is Alwaraq's own writing, made
+                      only from the library's books. Label it as such in the UI.
 
     Headers:
         Sessiontoken: optional. When present, chat history is loaded and used to
@@ -56,6 +67,7 @@ async def alwaraq_answer(
         alwaraq.answer_question,
         query=query,
         document_id=document_id,
+        context_book_id=context_book_id,
         session_token=sessiontoken,
         lang=lang,
         max_sources=max_sources,
@@ -152,6 +164,27 @@ async def alwaraq_register_books(
         "count": count,
         "profiles": "building in background" if request.build_profiles else "skipped",
         "status_code": 200,
+    }
+
+
+@router.post("/admin/books/names")
+async def alwaraq_backfill_book_names(
+    limit: int | None = None,
+    _: str = Depends(require_admin),
+):
+    """
+    Fetch a catalogue name for every Alwaraq book that has none, in the background.
+
+    Answers name the books they searched; a book with no catalogue entry shows a
+    bare id until its name has been looked up. Run this once to fill them all in
+    (one upstream call per book, 8 at a time). Reads `books`; never writes to it.
+    """
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, alwaraq.backfill_book_names, limit)
+    return {
+        "status": "processing",
+        "message": "Book names are being filled in. Check the server console for the summary.",
+        "status_code": 202,
     }
 
 
