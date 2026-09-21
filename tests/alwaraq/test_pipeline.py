@@ -405,6 +405,113 @@ class ComposedModeTest(_PipelineBase):
         self.assertIn("not enough text", data["answer"]["summary"])
 
 
+class FollowUpTest(_PipelineBase):
+    """A question that follows on from the last answer is about the books it came from."""
+
+    Q = "How does Dickens portray the treatment of children in the 19th century?"
+    HISTORY = ("User: Suggest good book in english\n"
+               "Assistant: 'David Copperfield' by Charles Dickens is a must-read.\n"
+               "Sources: David Copperfield")
+
+    def setUp(self):
+        super().setUp()
+        self.memory.load_context.return_value = self.HISTORY
+
+    def _understanding(self, about_previous_answer=True, **over):
+        return {
+            "standalone_question": self.Q, "language": "en", "intent": "fact",
+            "sub_queries": ["معاملة الأطفال"], "keywords": ["الأطفال"], "entities": ["ديكنز"],
+            "candidate_books": [], "content_language": None, "about_open_book": False,
+            "about_previous_answer": about_previous_answer, **over,
+        }
+
+    def test_it_searches_the_books_the_last_answer_came_from(self):
+        invoke, _ = fake_llm(understanding=self._understanding())
+        with mock.patch.object(retrieval, "route_books") as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=["90051"]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, status = alwaraq.answer_question(self.Q, session_token="tok")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.retrieve.call_args.args[0], ["90051"])  # David Copperfield, not the library
+        route.assert_not_called()
+        # and it gets book-scope depth rather than competing with seven other books
+        self.assertEqual(self.retrieve.call_args.kwargs["per_query_limit"], 40)
+        self.assertFalse(self.retrieve.call_args.kwargs["include_global_passages"])
+
+    def test_at_most_a_few_books_are_carried_over(self):
+        invoke, _ = fake_llm(understanding=self._understanding())
+        with mock.patch.object(alwaraq, "recent_session_books", return_value=["1", "2", "3", "4", "5"]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question(self.Q, session_token="tok")
+        self.assertEqual(self.retrieve.call_args.args[0], ["1", "2", "3"])
+
+    def test_a_fresh_question_still_routes_the_library(self):
+        invoke, _ = fake_llm(understanding=self._understanding(about_previous_answer=False))
+        with mock.patch.object(retrieval, "route_books", return_value=["ib"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=["90051"]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question("ماذا قال ابن بطوطة عن الصين؟", session_token="tok")
+        route.assert_called_once()
+        self.assertEqual(data["scope"], "library")
+        self.assertEqual(route.call_args.kwargs["pinned"], ["90051"])  # still nudged, not narrowed
+
+    def test_nothing_cited_before_means_nothing_to_follow(self):
+        invoke, _ = fake_llm(understanding=self._understanding())
+        with mock.patch.object(retrieval, "route_books", return_value=["ib"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=[]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question(self.Q, session_token="tok")
+        route.assert_called_once()
+
+    def test_an_explicitly_chosen_book_outranks_the_last_answer(self):
+        invoke, _ = fake_llm(understanding=self._understanding())
+        with mock.patch.object(alwaraq, "recent_session_books", return_value=["90051"]) as recent, \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            data, _ = alwaraq.answer_question(self.Q, document_id="ib", session_token="tok")
+        self.assertEqual(self.retrieve.call_args.args[0], ["ib"])
+        recent.assert_not_called()  # not even looked up when the scope is already fixed
+
+    def test_the_book_on_screen_outranks_the_last_answer(self):
+        invoke, _ = fake_llm(understanding=self._understanding(about_open_book=True))
+        with mock.patch.object(alwaraq, "recent_session_books", return_value=["90051"]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question(self.Q, context_book_id="91370", session_token="tok")
+        self.assertEqual(self.retrieve.call_args.args[0], ["91370"])
+
+    def test_without_history_there_is_nothing_to_follow_on_from(self):
+        self.memory.load_context.return_value = ""
+        invoke, _ = fake_llm(understanding=self._understanding())
+        with mock.patch.object(retrieval, "route_books", return_value=["ib"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=["90051"]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question(self.Q, session_token="tok")
+        route.assert_called_once()
+
+
+class AnswerMetadataTest(_PipelineBase):
+    """The prose of an answer cannot say what it was drawn from; the metadata can."""
+
+    def test_the_answer_object_is_saved_with_the_exchange(self):
+        invoke, _ = fake_llm()
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("سؤال", document_id="ib", session_token="tok")
+        meta = self.memory.save_exchange.call_args.kwargs["metadata"]
+        self.assertEqual(meta["books_cited"], ["ib"])
+        self.assertEqual(meta["status"], "ok")
+        self.assertEqual(meta["answer_mode"], "evidence")
+        self.assertEqual(meta["document_id"], "ib")
+        self.assertEqual(meta["sources"], ["P1"])
+        self.assertEqual(meta["query_id"], "qid-1")
+
+    def test_a_no_evidence_turn_records_no_books(self):
+        invoke, _ = fake_llm(scores={"C1": 0, "C2": 0})
+        with mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("سؤال", document_id="ib", session_token="tok")
+        meta = self.memory.save_exchange.call_args.kwargs["metadata"]
+        self.assertEqual(meta["status"], "no_evidence")
+        self.assertEqual(meta["books_cited"], [])
+
+
 class RecentSessionBooksTest(unittest.TestCase):
     def test_reads_books_cited_newest_first(self):
         rows = [{"books": ["3066", "4001"]}, {"books": ["4001", "298"]}, {"books": None}]

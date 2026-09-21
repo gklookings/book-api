@@ -59,11 +59,19 @@ class MemoryRoutesTest(unittest.TestCase):
         self.assertEqual(resp.json()["domain"], "alwaraq")
 
     def test_history(self):
+        stored = [
+            {"role": "user", "content": "q", "created_at": None},
+            {"role": "assistant", "content": "a", "created_at": None,
+             "metadata": {"books_cited": ["90051"], "answer_mode": "composed"}},
+        ]
         with mock.patch.object(alwaraq, "memory_repository") as repo:
-            repo.get_chat_history.return_value = [{"role": "user", "content": "q", "created_at": None}]
+            repo.get_chat_history.return_value = stored
             resp = _client().get("/alwaraq/history", headers={"Sessiontoken": "tok"})
         repo.get_chat_history.assert_called_once_with("tok", "alwaraq", limit=50, offset=0)
-        self.assertEqual(resp.json()["messages"], [{"role": "user", "content": "q", "created_at": None}])
+        messages = resp.json()["messages"]
+        self.assertEqual(messages[0], {"role": "user", "content": "q", "metadata": {}, "created_at": None})
+        # what the answer was drawn from travels with it, not only its prose
+        self.assertEqual(messages[1]["metadata"]["books_cited"], ["90051"])
 
 
 class AdminRoutesTest(unittest.TestCase):

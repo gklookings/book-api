@@ -13,6 +13,7 @@ Return a JSON object with exactly these keys:
 - "language": "ar" or "en" — the language the user wrote the current question in.
 - "intent": one of "fact", "trace", "compare", "reading_plan", "earliest_use", "define", "compose", "other". Use "compose" when the reader is not asking what a text says but asking you to WRITE something for them — a hook, a blurb, a pitch, a description, a summary aimed at someone. Use "reading_plan" when they are asking what to read (a recommendation or a reading order). Every other question is a question about the texts.
 - "content_language": "en" or "ar" when the reader asks for books written in that language ("a good book in english" -> "en"), otherwise null. This is the language of the BOOKS, not of the answer; the library holds both Arabic and English books.
+- "about_previous_answer": true when this question follows on from the assistant's last answer — it asks about a work, person or topic that answer named, or refers back to it ("it", "that book", "هذا الكتاب", or just the name the answer gave). false for a fresh question, and false when there is no history.
 - "about_open_book": true when the question is about the book the reader currently has open (e.g. "this novel", "this book", "هذا الكتاب", or a pronoun whose referent is that book), false otherwise. false when no book is open.
 - "entities": array of people, places and works named or clearly implied (use their Arabic names).
 - "time_range_ah": [start, end] in Hijri years if the question implies a period, else null.

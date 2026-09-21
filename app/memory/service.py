@@ -91,6 +91,7 @@ def save_exchange(
     domain: str,
     question: str,
     answer: str,
+    metadata: Optional[dict] = None,
 ) -> None:
     """
     Persist a single Q+A exchange:
@@ -98,6 +99,10 @@ def save_exchange(
       2. If window > MAX_MESSAGES → drop oldest pair + LLM summarise
       3. UPSERT user_memory
       4. INSERT two rows into chat_history
+
+    `metadata` is stored on the assistant's chat_history row: what the prose of
+    an answer cannot carry, such as which books it was drawn from. A later turn
+    reads it instead of re-reading the sentence.
     """
     if not session_token:
         return
@@ -141,7 +146,7 @@ def save_exchange(
 
     # Append to full history log
     repository.append_chat_history(session_token, domain, "user", question)
-    repository.append_chat_history(session_token, domain, "assistant", answer)
+    repository.append_chat_history(session_token, domain, "assistant", answer, metadata)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

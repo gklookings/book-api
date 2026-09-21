@@ -53,6 +53,8 @@ PER_BOOK_CAP = 4
 PERMALINK_TEMPLATE = os.getenv("ALWARAQ_PERMALINK_TEMPLATE", "")  # e.g. https://…?bookId={book_id}&page={page}
 # How many of the session's previous library answers contribute pinned books.
 SESSION_BOOK_LOOKBACK = int(os.getenv("ALWARAQ_SESSION_BOOK_LOOKBACK", "3"))
+# How many of them a follow-up question is narrowed to.
+FOLLOW_UP_BOOKS_MAX = int(os.getenv("ALWARAQ_FOLLOW_UP_BOOKS", "3"))
 # Seconds an answer waits for the names of the books it searched. The upstream
 # endpoint builds the whole book before sending a byte (~7s to first byte), so
 # waiting is a poor trade and the default is not to: the lookups still start,
@@ -113,6 +115,7 @@ def _understand(
         "candidate_books": [],
         "content_language": None,
         "about_open_book": False,
+        "about_previous_answer": False,
     }
     prompt = prompts.UNDERSTAND_PROMPT.format(
         history_block=prompts.history_block(history),
@@ -139,6 +142,7 @@ def _understand(
     out["language"] = out["language"] if out["language"] in ("ar", "en") else fallback["language"]
     out["intent"] = out["intent"] if out["intent"] in INTENTS else "other"
     out["about_open_book"] = bool(out["about_open_book"]) and bool(open_book_title)
+    out["about_previous_answer"] = bool(out["about_previous_answer"]) and bool(history)
     out["content_language"] = out["content_language"] if out["content_language"] in ("ar", "en") else None
     for key in ("entities", "sub_queries", "keywords", "candidate_books"):
         out[key] = [str(x) for x in out[key] if str(x).strip()] if isinstance(out[key], list) else []
@@ -428,7 +432,18 @@ def answer_question(
         content_language = understanding["content_language"] or requested_content_language(query)
         # "this novel" means the book on the reader's screen, whatever the scope toggle says.
         scope_book = document_id or (context_book_id if understanding["about_open_book"] else None)
-        library_scope = scope_book is None
+        # A question that follows on from the last answer is about the books that
+        # answer came from. Merely nudging routing towards them is not enough: they
+        # lose a 30-slot pool to seven other books, which is how a question about
+        # the David Copperfield just recommended was answered from Arabic ethics
+        # treatises. A follow-up searches those books and no others.
+        previous_books = recent_session_books(session_token) if scope_book is None else []
+        follow_up_books = (
+            previous_books[:FOLLOW_UP_BOOKS_MAX]
+            if scope_book is None and understanding["about_previous_answer"]
+            else []
+        )
+        library_scope = scope_book is None and not follow_up_books
         print(f"[alwaraq] Standalone question: {standalone!r} | scope={'library' if library_scope else scope_book}"
               f" | intent={understanding['intent']} | mode={mode}"
               f"{f' | books in {content_language}' if content_language else ''}")
@@ -454,11 +469,14 @@ def answer_question(
                 entities=understanding["entities"] + literals,
                 # the open book first: a library-wide question asked while reading
                 # something is usually still partly about what is on the screen
-                pinned=([context_book_id] if context_book_id else []) + recent_session_books(session_token),
+                pinned=([context_book_id] if context_book_id else []) + previous_books,
                 content_language=content_language,
             )
             if not books_searched:
                 raise AlwaraqError("No books could be selected for this question.", 404)
+        elif follow_up_books:
+            books_searched = follow_up_books
+            print(f"[alwaraq] Following on from the last answer: {books_searched}")
         else:
             if not retrieval.book_exists(scope_book):
                 raise AlwaraqError(f"No content found for document_id={scope_book}.", 404)
@@ -550,6 +568,11 @@ def answer_question(
             "disagreements": verified["disagreements"],
             "confidence": overall,
         }
+        # Only books that actually answered; "closest passages" from a no-evidence
+        # turn must not steer the next turn.
+        books_cited = (
+            list(dict.fromkeys(s["document_id"] for s in sources.values())) if status == "ok" else []
+        )
         latency_ms = int((time.time() - started) * 1000)
         print(f"[alwaraq] status={status} sources={len(sources)} dropped={verified.get('dropped')} "
               f"latency={latency_ms}ms timings={timings} tokens={usage}")
@@ -566,12 +589,7 @@ def answer_question(
                     "status": status,
                     "answer": answer,
                     "sources": list(sources),
-                    # Only books that actually answered; "closest passages" from a
-                    # no-evidence turn must not steer the next turn's routing.
-                    "books_cited": (
-                        list(dict.fromkeys(s["document_id"] for s in sources.values()))
-                        if status == "ok" else []
-                    ),
+                    "books_cited": books_cited,
                 },
                 "confidence": overall,
                 "latency_ms": latency_ms,
@@ -588,6 +606,16 @@ def answer_question(
                     domain=MEMORY_DOMAIN,
                     question=query,
                     answer=_compact_for_memory(summary, sources),
+                    # The prose of an answer cannot say which books it came from
+                    # in a form the next turn can act on. This can.
+                    metadata={
+                        "query_id": query_id,
+                        "status": status,
+                        "answer_mode": mode,
+                        "document_id": scope_book,
+                        "books_cited": books_cited,
+                        "sources": list(sources),
+                    },
                 )
             except Exception as e:
                 print(f"[alwaraq] Memory save failed (answer still returned): {e}")
@@ -629,6 +657,7 @@ def get_history(session_token: str, limit: int = 50, offset: int = 0) -> list[di
         {
             "role": r["role"],
             "content": r["content"],
+            "metadata": r.get("metadata") or {},
             "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
         }
         for r in rows
