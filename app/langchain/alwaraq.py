@@ -715,20 +715,29 @@ def detect_book_languages(document_ids: list[str] | None = None) -> dict:
 
 def backfill_book_names(limit: int | None = None) -> dict:
     """
-    Fetch a catalogue name for every Alwaraq book in `books` that has none.
+    Give every Alwaraq book in `books` its name, author and subject.
 
-    Run once and answers stop showing bare ids. Reads `books`; writes only to
-    alwaraq_books. Takes a while: one HTTP call per book, 8 at a time.
+    Walks the upstream catalogue listing (20 books a page, pages fetched in
+    parallel) and writes the entries whose id we actually hold. Anything the
+    listing does not cover falls back to the per-book endpoint, which is far
+    slower — `limit` caps how many of those are attempted.
+
+    Reads `books`; writes only to alwaraq_books.
     """
     rows = db.fetch_all("SELECT DISTINCT bookid FROM books")
     all_books = [r["bookid"] for r in rows if retrieval.is_library_book(r["bookid"])]
-    missing = [b for b in all_books if not retrieval.get_book_info(b)]
-    if limit:
-        missing = missing[:limit]
-    print(f"[alwaraq] Book name backfill: {len(missing)} of {len(all_books)} books have no catalogue entry")
-    saved = book_names.ensure_names(missing, budget_s=None, on_saved=lambda: None)
+    result = book_names.sync_catalogue(all_books)
     retrieval.invalidate_catalogue()
-    result = {"books": len(all_books), "missing": len(missing), "saved": saved}
+
+    still_missing = [b for b in all_books if not (_book_name(b, "ar") or _book_name(b, "en"))]
+    if still_missing:
+        attempts = still_missing if limit is None else still_missing[:limit]
+        print(f"[alwaraq] {len(still_missing)} book(s) not in the listing; looking up {len(attempts)} one by one")
+        result["named_one_by_one"] = book_names.ensure_names(attempts, budget_s=None)
+        retrieval.invalidate_catalogue()
+    result["still_unnamed"] = sum(
+        1 for b in all_books if not (_book_name(b, "ar") or _book_name(b, "en"))
+    )
     print(f"[alwaraq] Book name backfill done: {result}")
     return result
 

@@ -128,6 +128,30 @@ def spelling_variants(term: str, max_variants: int = MAX_VARIANTS) -> list[str]:
     return [term] + sorted(variants)[: max(0, max_variants - 1)]
 
 
+# ── What language a piece of book text is in ─────────────────────────────────
+
+_MARKUP_RE = re.compile(r"<[^>]{1,200}>|&[a-z#0-9]{2,8};", re.IGNORECASE)
+_PAGE_MARKER_RE = re.compile(r"Page Number\s*:?\s*\d*|رقم صفحة الكتاب الورقي\s*:?\s*\d*")
+MIN_SAMPLE_LETTERS = 20
+
+
+def sample_language(text: str, min_letters: int = MIN_SAMPLE_LETTERS) -> str | None:
+    """
+    'ar' / 'en' for a chunk of a book, or None when there is too little to tell.
+
+    Page markers and HTML markup are Latin whatever the book is written in, and
+    54 books in this store hold a single chunk reading "undefined" — counting
+    those as English is how Arabic dictionaries ended up in an English reading
+    list. Both are stripped, and a sample with almost no letters gets no vote.
+    """
+    cleaned = _PAGE_MARKER_RE.sub(" ", _MARKUP_RE.sub(" ", text or ""))
+    ar = len(_ARABIC_LETTER_RE.findall(cleaned))
+    en = len(_LATIN_LETTER_RE.findall(cleaned))
+    if ar + en < min_letters:
+        return None
+    return "ar" if ar >= en else "en"
+
+
 # ── The language the reader wants the BOOKS in ───────────────────────────────
 
 # Not the language of the answer: "suggest a good book in english" asks for an

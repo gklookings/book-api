@@ -173,11 +173,13 @@ async def alwaraq_backfill_book_names(
     _: str = Depends(require_admin),
 ):
     """
-    Fetch a catalogue name for every Alwaraq book that has none, in the background.
+    Give every Alwaraq book its name, author and subject, in the background.
 
     Answers name the books they searched; a book with no catalogue entry shows a
-    bare id until its name has been looked up. Run this once to fill them all in
-    (one upstream call per book, 8 at a time). Reads `books`; never writes to it.
+    bare id. Walks the upstream catalogue listing (20 books a page, in parallel)
+    and writes the ids this library holds — about a minute for the whole library.
+    `limit` caps the slow per-book fallback used for books the listing omits.
+    Reads `books`; never writes to it.
     """
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, alwaraq.backfill_book_names, limit)

@@ -1,15 +1,19 @@
 """
-Fill in the catalogue name of every Alwaraq book that has none.
+Give every book in the library its name, author and subject.
 
 Answers name the books they searched, and a book with no catalogue entry shows
-a bare id until it has been looked up. Run this once and the ids disappear.
+a bare id. This walks the upstream catalogue listing (20 books a page, pages
+fetched in parallel) and writes the entries whose id we actually hold — about a
+minute for the whole library. Books the listing does not cover fall back to the
+per-book endpoint, which costs roughly 7 seconds each.
 
 Usage (from the repo root):
-    venv/bin/python -m scripts.alwaraq_backfill_names          # every missing book
-    venv/bin/python -m scripts.alwaraq_backfill_names 50       # the first 50 only
+    venv/bin/python -m scripts.alwaraq_backfill_names          # everything
+    venv/bin/python -m scripts.alwaraq_backfill_names 50       # cap the slow fallback at 50 books
 
-Safe to re-run: books already in the catalogue are skipped, and a book whose
-lookup fails is retried on a later run (see ALWARAQ_NAME_RETRY_S).
+Safe to re-run; run it again after uploading new books. It does not touch
+alwaraq_books.language, which comes from the book's own text
+(scripts/alwaraq_book_languages.py).
 """
 
 import sys

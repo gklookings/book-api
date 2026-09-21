@@ -25,6 +25,14 @@ import requests
 from app.langchain.alwaraq_lib import db
 from app.langchain.alwaraq_lib.normalize import detect_language
 
+# The whole catalogue, 20 books to a page: bookid, name, author and subject.
+# One page costs about as much as a single book lookup, so this is the way to
+# name the library; json_bookallpages is the per-book fallback.
+LIST_URL = "https://alwaraq.net/json_booklist.php"
+LIST_PAGE_SIZE = 20  # fixed upstream: limit/pagesize/perpage are all ignored
+LIST_WORKERS = int(os.getenv("ALWARAQ_BOOKLIST_WORKERS", "8"))
+LIST_MAX_PAGES = int(os.getenv("ALWARAQ_BOOKLIST_MAX_PAGES", "400"))
+
 # Note: adding a `language` parameter makes this endpoint return HTTP 500.
 API_URL = "https://alwaraq.net/json_bookallpages.php?bookId={book_id}"
 RETRY_AFTER_S = int(os.getenv("ALWARAQ_NAME_RETRY_S", "86400"))
@@ -91,29 +99,116 @@ def fetch_book_meta(book_id: str) -> dict | None:
     return _meta_from(raw.decode("utf-8", "replace"), complete=True)
 
 
-def _save(book_id: str, meta: dict) -> None:
-    # title_ar is NOT NULL, so the name always goes there; a Latin name is also
-    # stored as title_en, which is what an English answer looks for first.
-    latin = detect_language(meta["name"]) == "en"
-    db.execute(
-        """
-        INSERT INTO alwaraq_books (book_id, legacy_bookid, title_ar, title_en, author_en, language)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (book_id) DO UPDATE SET
-            title_ar = EXCLUDED.title_ar,
-            title_en = COALESCE(EXCLUDED.title_en, alwaraq_books.title_en),
-            author_en = COALESCE(alwaraq_books.author_en, EXCLUDED.author_en),
-            language = EXCLUDED.language
-        """,
-        (
-            book_id,
-            book_id,
-            meta["name"],
-            meta["name"] if latin else None,
-            meta["author"],
-            "en" if latin else "ar",
-        ),
+# ── The whole catalogue in one walk ─────────────────────────────────────────
+
+
+def _entry(row: dict) -> dict | None:
+    book_id = str(row.get("bookid") or "").strip()
+    name = str(row.get("name") or "").strip()
+    if not book_id or not name:
+        return None
+    return {
+        "book_id": book_id,
+        "name": name,
+        "author": str(row.get("author") or "").strip() or None,
+        "genre": str(row.get("subjectName") or "").strip() or None,
+    }
+
+
+def fetch_book_list_page(page: int) -> tuple[list[dict], bool, int]:
+    """(books on this page, is this the last page, total books upstream)."""
+    resp = requests.get(LIST_URL, params={"page": page}, timeout=TIMEOUT_S)
+    if resp.status_code != 200:
+        print(f"[alwaraq] Book list page {page}: HTTP {resp.status_code}")
+        return [], False, 0
+    data = resp.json()
+    books = [e for e in (_entry(r) for r in data.get("books") or []) if e]
+    return books, bool(data.get("isLastPage")), int(data.get("total") or 0)
+
+
+def _safe_page(page: int) -> list[dict]:
+    try:
+        return fetch_book_list_page(page)[0]
+    except Exception as e:
+        print(f"[alwaraq] Book list page {page} failed: {e}")
+        return []
+
+
+def sync_catalogue(known_ids: list[str]) -> dict:
+    """
+    Name the books this library holds from the upstream catalogue listing.
+
+    Only ids present in our own store are written: the listing covers books we
+    do not have. Upstream is taken as the source of truth for a book's name,
+    author and subject; `language` is left alone, because it is detected from
+    the book's own text (retrieval.detect_book_languages) and that is the
+    question a reader is really asking when they want "a book in english".
+    """
+    wanted = {str(b) for b in known_ids if b}
+    books, is_last, total = fetch_book_list_page(1)
+    collected = {b["book_id"]: b for b in books}
+    pages = min(max(1, -(-total // LIST_PAGE_SIZE)), LIST_MAX_PAGES) if total else 1
+    print(f"[alwaraq] Book list: {total} books upstream, {pages} page(s)")
+    if not is_last and pages > 1:
+        with ThreadPoolExecutor(max_workers=LIST_WORKERS) as pool:
+            for page_books in pool.map(_safe_page, range(2, pages + 1)):
+                for b in page_books:
+                    collected.setdefault(b["book_id"], b)
+    matched = [b for book_id, b in collected.items() if book_id in wanted]
+    saved = save_entries(matched)
+    result = {
+        "upstream": len(collected),
+        "in_library": len(wanted),
+        "named": saved,
+        "not_listed": len(wanted - {b["book_id"] for b in matched}),
+    }
+    print(f"[alwaraq] Book list sync: {result}")
+    return result
+
+
+def _titles(name: str, author: str | None) -> tuple:
+    """Put a name in the column that matches its script; the other stays empty."""
+    latin_title = detect_language(name) == "en"
+    latin_author = bool(author) and detect_language(author) == "en"
+    return (
+        None if latin_title else name,
+        name if latin_title else None,
+        None if latin_author else author,
+        author if latin_author else None,
     )
+
+
+def save_entries(entries: list[dict], batch_size: int = 500) -> int:
+    """Upsert names, authors and subjects. Leaves language and everything else."""
+    rows = []
+    for e in entries:
+        title_ar, title_en, author_ar, author_en = _titles(e["name"], e.get("author"))
+        rows.append((e["book_id"], e["book_id"], title_ar, title_en, author_ar, author_en, e.get("genre")))
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        values = ", ".join(["(%s, %s, %s, %s, %s, %s, %s)"] * len(batch))
+        db.execute(
+            f"""
+            INSERT INTO alwaraq_books
+                (book_id, legacy_bookid, title_ar, title_en, author_ar, author_en, genre)
+            VALUES {values}
+            ON CONFLICT (book_id) DO UPDATE SET
+                title_ar = EXCLUDED.title_ar,
+                title_en = EXCLUDED.title_en,
+                author_ar = EXCLUDED.author_ar,
+                author_en = EXCLUDED.author_en,
+                genre = COALESCE(EXCLUDED.genre, alwaraq_books.genre)
+            """,
+            [x for row in batch for x in row],
+        )
+    return len(rows)
+
+
+# ── One book at a time (fallback for anything the listing does not cover) ────
+
+
+def _save(book_id: str, meta: dict) -> None:
+    save_entries([{"book_id": book_id, "name": meta["name"], "author": meta["author"], "genre": None}])
 
 
 def _fetch_and_save(book_id: str, on_saved) -> str | None:

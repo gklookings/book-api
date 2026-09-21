@@ -262,6 +262,21 @@ class BookLanguageTest(unittest.TestCase):
             books = retrieval.route_books(["[0]"], [], [], top_n=2, content_language="en")
         self.assertTrue(all(b in ("603", "90051", "612") for b in books), books)
 
+    def test_a_book_with_no_usable_text_gets_no_language(self):
+        """155 books in this store hold a single empty or "undefined" chunk."""
+        rows = [{"bookid": "142", "sample": "undefined"} for _ in range(5)]
+        with mock.patch.object(retrieval.db, "fetch_all", return_value=rows), \
+             mock.patch.object(retrieval.db, "execute") as ex:
+            result = retrieval.detect_book_languages()
+        self.assertEqual(result, {"books": 1, "neither (empty or another language)": 1})
+        self.assertEqual(ex.call_args.args[1], ["142", "142", None])  # not guessed as English
+
+    def test_page_markers_do_not_make_an_arabic_book_english(self):
+        rows = [{"bookid": "89", "sample": "Page Number : 12 &nbsp; لسان العرب لابن منظور وهو معجم جامع"}]
+        with mock.patch.object(retrieval.db, "fetch_all", return_value=rows), \
+             mock.patch.object(retrieval.db, "execute"):
+            self.assertEqual(retrieval.detect_book_languages(), {"books": 1, "ar": 1})
+
     def test_language_is_the_majority_of_several_samples(self):
         """The first page is often front matter in the other script."""
         rows = [

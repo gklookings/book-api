@@ -753,7 +753,6 @@ def route_books(
 
 # ── Book language (reads `books`, writes alwaraq_books.language only) ────────
 
-LANGUAGE_SAMPLES = 3
 LANGUAGE_SAMPLE_CHARS = 500
 _LANGUAGE_UPSERT_BATCH = 500
 
@@ -765,11 +764,14 @@ def detect_book_languages(document_ids: list[str] | None = None) -> dict:
     A reader asking for "a book in english" means the book's text, and about
     half of this library is English — but nothing recorded that, so a
     recommendation was routed by passage similarity alone and landed on Arabic
-    dictionaries and Quranic exegesis. Samples a few chunks spread through each
+    dictionaries and Quranic exegesis. Samples five chunks spread through each
     book and takes the majority, which is steadier than reading the first page
-    (front matter is often in the other script).
+    (front matter is often in the other script). A book that is neither Arabic
+    nor English — empty in this store, or a Japanese or Chinese text — is left
+    with no language rather than a guessed one, which keeps it out of
+    recommendations instead of being offered as an English book.
     """
-    from app.langchain.alwaraq_lib.normalize import detect_language
+    from app.langchain.alwaraq_lib.normalize import sample_language
 
     where = "WHERE text_content IS NOT NULL" + (" AND bookid = ANY(%s)" if document_ids else "")
     rows = db.fetch_all(
@@ -779,15 +781,20 @@ def detect_book_languages(document_ids: list[str] | None = None) -> dict:
                    row_number() OVER (PARTITION BY bookid ORDER BY id) AS rn,
                    COUNT(*) OVER (PARTITION BY bookid) AS n
             FROM books {where}
-        ) s WHERE rn IN (GREATEST(n / 10, 1), GREATEST(n / 2, 1), GREATEST(n * 9 / 10, 1))
+        ) s WHERE rn IN (GREATEST(n / 10, 1), GREATEST(n / 4, 1), GREATEST(n / 2, 1),
+                         GREATEST(n * 3 / 4, 1), GREATEST(n * 9 / 10, 1))
         """,
         ([document_ids] if document_ids else None),
     )
     votes: dict[str, list[str]] = {}
     for row in rows:
-        if is_library_book(row["bookid"]):
-            votes.setdefault(row["bookid"], []).append(detect_language(row["sample"]))
-    languages = {b: max(set(v), key=v.count) for b, v in votes.items()}
+        if not is_library_book(row["bookid"]):
+            continue
+        votes.setdefault(row["bookid"], [])
+        language = sample_language(row["sample"])
+        if language:
+            votes[row["bookid"]].append(language)
+    languages = {b: (max(set(v), key=v.count) if v else None) for b, v in votes.items()}
 
     pairs = sorted(languages.items())
     for i in range(0, len(pairs), _LANGUAGE_UPSERT_BATCH):
@@ -804,7 +811,8 @@ def detect_book_languages(document_ids: list[str] | None = None) -> dict:
     invalidate_catalogue()
     counts: dict[str, int] = {}
     for lang in languages.values():
-        counts[lang] = counts.get(lang, 0) + 1
+        key = lang or "neither (empty or another language)"
+        counts[key] = counts.get(key, 0) + 1
     result = {"books": len(languages), **counts}
     print(f"[alwaraq] Book languages detected: {result}")
     return result
