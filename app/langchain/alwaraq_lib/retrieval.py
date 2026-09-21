@@ -711,6 +711,7 @@ def route_books(
     top_n: int,
     entities: list[str] | None = None,
     pinned: list[str] | None = None,
+    content_language: str | None = None,
 ) -> list[str]:
     """
     Pick the most relevant books for a library-scope question. Signals:
@@ -723,6 +724,7 @@ def route_books(
     keyword scan uses `entities` + `keywords`, since titles rarely occur in the text.
     `pinned` books (e.g. the ones the session already cited) are always kept, so a
     follow-up question is not routed away from the book that answered the last one.
+    `content_language` ("a good book in english") keeps only books written in it.
     """
     entities = entities or []
     pinned = [b for b in dict.fromkeys(pinned or []) if b][:PINNED_BOOKS_MAX]
@@ -743,9 +745,100 @@ def route_books(
             lists.append([{"key": b} for b in ranked[: top_n * 3]])
             weights.append(weight)
     fused = rrf_fuse(lists, weights=weights)
-    kept = list(dict.fromkeys(named + pinned))
-    ordered = list(dict.fromkeys(kept + [p["key"] for p in fused]))
-    return ordered[: max(top_n, len(kept))]
+    first = list(dict.fromkeys(named + pinned))
+    ordered = list(dict.fromkeys(first + [p["key"] for p in fused]))
+    ordered = filter_by_language(ordered, content_language, top_n)
+    return ordered[: max(top_n, len(first))]
+
+
+# ── Book language (reads `books`, writes alwaraq_books.language only) ────────
+
+LANGUAGE_SAMPLES = 3
+LANGUAGE_SAMPLE_CHARS = 500
+_LANGUAGE_UPSERT_BATCH = 500
+
+
+def detect_book_languages(document_ids: list[str] | None = None) -> dict:
+    """
+    Record which language each book is written in, taken from its own text.
+
+    A reader asking for "a book in english" means the book's text, and about
+    half of this library is English — but nothing recorded that, so a
+    recommendation was routed by passage similarity alone and landed on Arabic
+    dictionaries and Quranic exegesis. Samples a few chunks spread through each
+    book and takes the majority, which is steadier than reading the first page
+    (front matter is often in the other script).
+    """
+    from app.langchain.alwaraq_lib.normalize import detect_language
+
+    where = "WHERE text_content IS NOT NULL" + (" AND bookid = ANY(%s)" if document_ids else "")
+    rows = db.fetch_all(
+        f"""
+        SELECT bookid, left(text_content, {LANGUAGE_SAMPLE_CHARS}) AS sample FROM (
+            SELECT bookid, text_content,
+                   row_number() OVER (PARTITION BY bookid ORDER BY id) AS rn,
+                   COUNT(*) OVER (PARTITION BY bookid) AS n
+            FROM books {where}
+        ) s WHERE rn IN (GREATEST(n / 10, 1), GREATEST(n / 2, 1), GREATEST(n * 9 / 10, 1))
+        """,
+        ([document_ids] if document_ids else None),
+    )
+    votes: dict[str, list[str]] = {}
+    for row in rows:
+        if is_library_book(row["bookid"]):
+            votes.setdefault(row["bookid"], []).append(detect_language(row["sample"]))
+    languages = {b: max(set(v), key=v.count) for b, v in votes.items()}
+
+    pairs = sorted(languages.items())
+    for i in range(0, len(pairs), _LANGUAGE_UPSERT_BATCH):
+        batch = pairs[i : i + _LANGUAGE_UPSERT_BATCH]
+        values = ", ".join(["(%s, %s, %s)"] * len(batch))
+        params = [x for book_id, lang in batch for x in (book_id, book_id, lang)]
+        db.execute(
+            f"""
+            INSERT INTO alwaraq_books (book_id, legacy_bookid, language) VALUES {values}
+            ON CONFLICT (book_id) DO UPDATE SET language = EXCLUDED.language
+            """,
+            params,
+        )
+    invalidate_catalogue()
+    counts: dict[str, int] = {}
+    for lang in languages.values():
+        counts[lang] = counts.get(lang, 0) + 1
+    result = {"books": len(languages), **counts}
+    print(f"[alwaraq] Book languages detected: {result}")
+    return result
+
+
+def book_language(document_id: str) -> str | None:
+    return (get_book_info(document_id) or {}).get("language")
+
+
+def books_in_language(language: str, limit: int) -> list[str]:
+    """
+    Catalogue books written in `language` — the pool a recommendation draws on.
+
+    Books whose name has been looked up come first: a recommendation has to be
+    able to say what it is recommending, and a bare id is no use to a reader.
+    """
+    rows = [r for r in get_catalogue() if r.get("language") == language and r.get("legacy_bookid")]
+    named = [r["legacy_bookid"] for r in rows if r.get("title_ar") or r.get("title_en")]
+    rest = [r["legacy_bookid"] for r in rows if not (r.get("title_ar") or r.get("title_en"))]
+    return (named + rest)[:limit]
+
+
+def filter_by_language(document_ids: list[str], language: str | None, top_n: int) -> list[str]:
+    """
+    Keep the books actually written in the language the reader asked for, topping
+    up from the catalogue when routing found too few. Falls back to the books as
+    routed rather than leaving the reader with nothing.
+    """
+    if not language:
+        return document_ids
+    kept = [d for d in document_ids if book_language(d) == language]
+    if len(kept) < top_n:
+        kept += [b for b in books_in_language(language, top_n * 2) if b not in kept]
+    return kept or document_ids
 
 
 # ── Library scope: building routing profiles (reads `books` only) ────────────

@@ -128,6 +128,24 @@ def spelling_variants(term: str, max_variants: int = MAX_VARIANTS) -> list[str]:
     return [term] + sorted(variants)[: max(0, max_variants - 1)]
 
 
+# ── The language the reader wants the BOOKS in ───────────────────────────────
+
+# Not the language of the answer: "suggest a good book in english" asks for an
+# English book, and about half this library is English.
+_CONTENT_LANGUAGE_RES = (
+    ("en", re.compile(r"\bin\s+english\b|بالانجليزي|بالإنجليزي|بالانكليزي|بالإنكليزي", re.IGNORECASE)),
+    ("ar", re.compile(r"\bin\s+arabic\b|بالعربي(?:ة)?\b", re.IGNORECASE)),
+)
+
+
+def requested_content_language(text: str) -> str | None:
+    """'en' / 'ar' when the question asks for books in that language, else None."""
+    for language, pattern in _CONTENT_LANGUAGE_RES:
+        if pattern.search(text or ""):
+            return language
+    return None
+
+
 # ── Literal terms lifted straight out of the question ────────────────────────
 
 # A quoted span, in any script and any of the quote marks readers actually type.

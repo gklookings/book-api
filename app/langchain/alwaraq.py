@@ -24,7 +24,11 @@ import time
 from psycopg2 import errors as pg_errors
 
 from app.langchain.alwaraq_lib import book_names, db, prompts, retrieval, search_index
-from app.langchain.alwaraq_lib.normalize import detect_language, literal_terms
+from app.langchain.alwaraq_lib.normalize import (
+    detect_language,
+    literal_terms,
+    requested_content_language,
+)
 from app.langchain.alwaraq_lib.verify import (
     strip_unknown_markers,
     verify_answer,
@@ -107,6 +111,7 @@ def _understand(
         "sub_queries": [question],
         "keywords": [],
         "candidate_books": [],
+        "content_language": None,
         "about_open_book": False,
     }
     prompt = prompts.UNDERSTAND_PROMPT.format(
@@ -134,6 +139,7 @@ def _understand(
     out["language"] = out["language"] if out["language"] in ("ar", "en") else fallback["language"]
     out["intent"] = out["intent"] if out["intent"] in INTENTS else "other"
     out["about_open_book"] = bool(out["about_open_book"]) and bool(open_book_title)
+    out["content_language"] = out["content_language"] if out["content_language"] in ("ar", "en") else None
     for key in ("entities", "sub_queries", "keywords", "candidate_books"):
         out[key] = [str(x) for x in out[key] if str(x).strip()] if isinstance(out[key], list) else []
     return out
@@ -417,11 +423,15 @@ def answer_question(
         # Asking to be written for ("a two-line hook for this novel") is not asking
         # what a text says: composed mode writes from the books instead of citing them.
         mode = "composed" if understanding["intent"] in GENERATIVE_INTENTS else "evidence"
+        # "a good book in english" is about the language of the BOOKS, not the answer.
+        # Read in code as well: the rewrite step drops it more often than not.
+        content_language = understanding["content_language"] or requested_content_language(query)
         # "this novel" means the book on the reader's screen, whatever the scope toggle says.
         scope_book = document_id or (context_book_id if understanding["about_open_book"] else None)
         library_scope = scope_book is None
         print(f"[alwaraq] Standalone question: {standalone!r} | scope={'library' if library_scope else scope_book}"
-              f" | intent={understanding['intent']} | mode={mode}")
+              f" | intent={understanding['intent']} | mode={mode}"
+              f"{f' | books in {content_language}' if content_language else ''}")
 
         # ── 2. Scope ─────────────────────────────────────────────────────────
         search_index.maybe_sync_in_background()
@@ -445,6 +455,7 @@ def answer_question(
                 # the open book first: a library-wide question asked while reading
                 # something is usually still partly about what is on the screen
                 pinned=([context_book_id] if context_book_id else []) + recent_session_books(session_token),
+                content_language=content_language,
             )
             if not books_searched:
                 raise AlwaraqError("No books could be selected for this question.", 404)
@@ -640,7 +651,9 @@ def record_feedback(query_id: str, feedback: int) -> bool:
 
 
 def list_books(q: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
-    rows = retrieval.get_catalogue()
+    # A book may hold a catalogue row for its language alone, before anyone has
+    # looked its name up. Those are not entries a reader can be shown.
+    rows = [r for r in retrieval.get_catalogue() if r.get("title_ar") or r.get("title_en")]
     if q:
         from app.langchain.alwaraq_lib.normalize import normalize_arabic
 
@@ -694,6 +707,10 @@ def register_books(books: list[dict]) -> int:
 
 def build_profiles(document_ids: list[str] | None = None) -> dict:
     return retrieval.build_profiles(document_ids)
+
+
+def detect_book_languages(document_ids: list[str] | None = None) -> dict:
+    return retrieval.detect_book_languages(document_ids)
 
 
 def backfill_book_names(limit: int | None = None) -> dict:

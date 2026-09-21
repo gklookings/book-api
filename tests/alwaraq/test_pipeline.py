@@ -303,7 +303,7 @@ class ComposedModeTest(_PipelineBase):
         return {
             "standalone_question": self.WRITE, "language": "en", "intent": intent,
             "about_open_book": about_open_book, "sub_queries": ["مغامرات"],
-            "keywords": ["مغامرة"], "entities": [], "candidate_books": [],
+            "keywords": ["مغامرة"], "entities": [], "candidate_books": [], "content_language": None,
         }
 
     def test_this_novel_resolves_to_the_open_book(self):
@@ -377,6 +377,24 @@ class ComposedModeTest(_PipelineBase):
         self.assertEqual(data["answer_mode"], "evidence")
         self.assertEqual(data["scope"], "library")
         self.assertEqual(route.call_args.kwargs["pinned"], ["91370", "3066"])
+
+    def test_a_request_for_english_books_narrows_the_routing(self):
+        understanding = self._understanding(intent="reading_plan", about_open_book=False)
+        understanding["content_language"] = None  # the rewrite step usually drops it
+        invoke, _ = fake_llm(understanding=understanding)
+        with mock.patch.object(retrieval, "route_books", return_value=["603"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=[]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("suggest a good book in english for a 15 year old girl")
+        self.assertEqual(route.call_args.kwargs["content_language"], "en")  # read from the question
+
+    def test_a_question_that_names_no_language_does_not_filter(self):
+        invoke, _ = fake_llm(understanding=self._understanding(intent="reading_plan", about_open_book=False))
+        with mock.patch.object(retrieval, "route_books", return_value=["ib"]) as route, \
+             mock.patch.object(alwaraq, "recent_session_books", return_value=[]), \
+             mock.patch.object(alwaraq, "_invoke_json", side_effect=invoke):
+            alwaraq.answer_question("اقترح كتابا جيدا")
+        self.assertIsNone(route.call_args.kwargs["content_language"])
 
     def test_no_material_says_so_in_its_own_words(self):
         self.retrieve.return_value = []

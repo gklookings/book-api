@@ -220,6 +220,67 @@ class ExpandNeighboursTest(unittest.TestCase):
         self.assertEqual(out[0]["text"], "MIDDLE")
 
 
+class BookLanguageTest(unittest.TestCase):
+    """About half the library is English; recommendations have to know which half."""
+
+    CATALOGUE = [
+        {"legacy_bookid": "603", "language": "en", "title_ar": "The Story of Civilzation"},
+        {"legacy_bookid": "90051", "language": "en", "title_ar": "David Copperfield"},
+        {"legacy_bookid": "612", "language": "en", "title_ar": "Durant"},
+        {"legacy_bookid": "298", "language": "ar", "title_ar": "إخبار العلماء"},
+        {"legacy_bookid": "30", "language": "ar", "title_ar": "القانون في الطب"},
+    ]
+
+    def test_routed_books_are_narrowed_to_the_language_asked_for(self):
+        with mock.patch.object(retrieval, "get_catalogue", return_value=self.CATALOGUE):
+            kept = retrieval.filter_by_language(["298", "603", "30", "90051"], "en", top_n=2)
+        self.assertEqual(kept, ["603", "90051"])
+
+    def test_tops_up_from_the_catalogue_when_routing_found_too_few(self):
+        with mock.patch.object(retrieval, "get_catalogue", return_value=self.CATALOGUE):
+            kept = retrieval.filter_by_language(["298", "30"], "en", top_n=3)
+        self.assertEqual(sorted(kept), ["603", "612", "90051"])
+
+    def test_books_whose_name_is_known_come_first(self):
+        catalogue = self.CATALOGUE + [{"legacy_bookid": "777", "language": "en", "title_ar": None}]
+        with mock.patch.object(retrieval, "get_catalogue", return_value=catalogue):
+            pool = retrieval.books_in_language("en", limit=10)
+        self.assertEqual(pool, ["603", "90051", "612", "777"])  # a bare id is no use to a reader
+
+    def test_no_language_asked_for_changes_nothing(self):
+        self.assertEqual(retrieval.filter_by_language(["298", "30"], None, 8), ["298", "30"])
+
+    def test_an_unknown_language_never_empties_the_answer(self):
+        with mock.patch.object(retrieval, "get_catalogue", return_value=[]):
+            self.assertEqual(retrieval.filter_by_language(["298", "30"], "en", 8), ["298", "30"])
+
+    def test_route_books_applies_it(self):
+        with mock.patch.object(retrieval, "get_catalogue", return_value=self.CATALOGUE), \
+             mock.patch.object(retrieval, "_safe_fetch_all", return_value=[]), \
+             mock.patch.object(retrieval, "keyword_route", return_value=["298", "30"]), \
+             mock.patch.object(retrieval, "vector_route", return_value=["298"]):
+            books = retrieval.route_books(["[0]"], [], [], top_n=2, content_language="en")
+        self.assertTrue(all(b in ("603", "90051", "612") for b in books), books)
+
+    def test_language_is_the_majority_of_several_samples(self):
+        """The first page is often front matter in the other script."""
+        rows = [
+            {"bookid": "603", "sample": "Page Number : 1 بسم"},       # front matter
+            {"bookid": "603", "sample": "THE STORY OF CIVILIZATION"},
+            {"bookid": "603", "sample": "Will Durant wrote this"},
+            {"bookid": "30", "sample": "القانون في الطب لابن سينا"},
+            {"bookid": "30", "sample": "الكتاب الأول في الأمور"},
+            {"bookid": "diaralaqool", "sample": "not a library book"},
+        ]
+        with mock.patch.object(retrieval.db, "fetch_all", return_value=rows), \
+             mock.patch.object(retrieval.db, "execute") as ex:
+            result = retrieval.detect_book_languages()
+        self.assertEqual(result, {"books": 2, "en": 1, "ar": 1})
+        params = ex.call_args.args[1]
+        self.assertEqual(params, ["30", "30", "ar", "603", "603", "en"])  # book_id, legacy_bookid, language
+        self.assertNotIn("diaralaqool", params)
+
+
 class ReadOnlyBooksTableTest(unittest.TestCase):
     """The new module must never write to the shared `books` table."""
 

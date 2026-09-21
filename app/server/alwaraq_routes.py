@@ -188,6 +188,25 @@ async def alwaraq_backfill_book_names(
     }
 
 
+@router.post("/admin/books/languages")
+async def alwaraq_detect_book_languages(_: str = Depends(require_admin)):
+    """
+    Record which language each book is written in, in the background.
+
+    Roughly half this library is English, and until this has run nothing knows
+    which half — so "suggest a good book in english" is routed by passage
+    similarity alone. Reads `books`; writes only alwaraq_books.language.
+    Re-run after uploading new books.
+    """
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, alwaraq.detect_book_languages, None)
+    return {
+        "status": "processing",
+        "message": "Book languages are being detected. Check the server console for the summary.",
+        "status_code": 202,
+    }
+
+
 @router.post("/admin/profiles/build")
 async def alwaraq_build_profiles(
     request: AlwaraqBuildProfilesRequest,
