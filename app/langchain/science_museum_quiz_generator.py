@@ -421,6 +421,56 @@ def _nobel_year(ctx, s):
     )
 
 
+def _laureate_distractors(ctx, s, entry, accept):
+    """Other laureates, preferring the same category and nearby prize years."""
+    return ctx.distractors(
+        s,
+        candidates=ctx.laureates,
+        accept=accept,
+        score=lambda c: (0 if entry["category"] in _categories(c) else 50)
+        + min(abs(n["year"] - entry["year"]) for n in c["nobels"]) / 5,
+    )
+
+
+def _not_co_laureate(entry):
+    prize = (entry["year"], entry["category"])
+    return lambda c: all((n["year"], n["category"]) != prize for n in c["nobels"])
+
+
+def _nobel_identify(ctx, s):
+    entry = ctx.rng.choice(s["nobels"])
+    wrongs = _laureate_distractors(ctx, s, entry, _not_co_laureate(entry))
+    if not wrongs:
+        return None
+    return _question(
+        _fmt(
+            "This person was awarded the {prize} in {year}. Who is it?",
+            "مَن الشخصية التي تظهر في الصورة، والتي مُنحت {prize} عام {year}؟",
+            prize=_category(entry["category"], prize=True), year=entry["year"],
+        ),
+        s["picture"], "text",
+        _name_option(s, True), [_name_option(w, False) for w in wrongs], s,
+    )
+
+
+def _nobel_category_pick(ctx, s):
+    entry = ctx.rng.choice(s["nobels"])
+    wrongs = _laureate_distractors(
+        ctx, s, entry, lambda c: entry["category"] not in _categories(c)
+    )
+    if not wrongs:
+        return None
+    return _question(
+        _fmt(
+            "Which of these people was awarded the {prize}?",
+            "أيّ من هؤلاء حصل على {prize}؟",
+            prize=_category(entry["category"], prize=True),
+        ),
+        None, "text",
+        _name_option(s, True), [_name_option(w, False) for w in wrongs], s,
+    )
+
+
 def _nobel_citation(ctx, s):
     entries = [n for n in s["nobels"] if len(n["citation"]) >= 15]
     if not entries:
@@ -428,13 +478,10 @@ def _nobel_citation(ctx, s):
     entry = ctx.rng.choice(entries)
     citation = _mask(entry["citation"], s["name"])
     citation_key = _norm(entry["citation"])
-    wrongs = ctx.distractors(
-        s,
-        candidates=ctx.laureates,
-        # Co-laureates often share the exact citation.
-        accept=lambda c: all(_norm(n["citation"]) != citation_key for n in c["nobels"]),
-        score=lambda c: (0 if entry["category"] in _categories(c) else 50)
-        + min(abs(n["year"] - entry["year"]) for n in c["nobels"]) / 5,
+    # Co-laureates often share the exact citation.
+    wrongs = _laureate_distractors(
+        ctx, s, entry,
+        lambda c: all(_norm(n["citation"]) != citation_key for n in c["nobels"]),
     )
     if not wrongs:
         return None
@@ -452,14 +499,7 @@ def _nobel_citation(ctx, s):
 
 def _nobel_winner_of_year(ctx, s):
     entry = ctx.rng.choice(s["nobels"])
-    prize = (entry["year"], entry["category"])
-    wrongs = ctx.distractors(
-        s,
-        candidates=ctx.laureates,
-        accept=lambda c: all((n["year"], n["category"]) != prize for n in c["nobels"]),
-        score=lambda c: (0 if entry["category"] in _categories(c) else 50)
-        + min(abs(n["year"] - entry["year"]) for n in c["nobels"]) / 5,
-    )
+    wrongs = _laureate_distractors(ctx, s, entry, _not_co_laureate(entry))
     if not wrongs:
         return None
     return _question(
@@ -493,15 +533,19 @@ QUESTION_TYPES = {
     "birth_century": (_birth_century, lambda ctx, s: s["birthYear"] < 1900, 1, "timeline"),
     "born_first": (_born_first, _always, 1, "timeline"),
     "field_pick": (_field_pick, lambda ctx, s: ctx.field_of(s) in ctx.fields, 2, "field"),
-    "nobel_category": (_nobel_category, _is_laureate, 2, "nobel"),
+    # Within a fieldId quiz the category is (nearly) always that field, so it gives itself away.
+    "nobel_category": (_nobel_category, lambda ctx, s: s["nobels"] and not ctx.field_id, 2, "nobel"),
     "nobel_year": (_nobel_year, _is_laureate, 2, "nobel"),
     "nobel_citation": (_nobel_citation, _is_laureate, 2, "nobel"),
     "nobel_winner_of_year": (_nobel_winner_of_year, _is_laureate, 2, "nobel"),
+    "nobel_identify": (_nobel_identify, _is_laureate, 2, "nobel"),
+    "nobel_category_pick": (_nobel_category_pick, _is_laureate, 1, "nobel"),
 }
+NOBEL_FIELD = {"en": "Nobel Prize", "ar": "جائزة نوبل"}
 
 
 def _choose_type(eligible, usage, rng):
-    names = [n for n in QUESTION_TYPES if eligible[n]]
+    names = [n for n in eligible if eligible[n]]
     weights = [QUESTION_TYPES[n][2] / (1 + 2 * usage[n]) for n in names]
     return rng.choices(names, weights=weights, k=1)[0]
 
@@ -544,28 +588,34 @@ def _render(question, index, lang, source_lang, translations):
 # ── Public entry point ───────────────────────────────────────────────────────
 
 
-def generate_quiz(qn_count: int, language: str, field_id: int | None = None):
+def generate_quiz(qn_count: int, language: str, field_id: int | None = None, is_nobel: bool = False):
+    """is_nobel: only Nobel laureates and only "nobel" category questions."""
     try:
         pool_size = min(MAX_POOL_SIZE, max(MIN_POOL_SIZE, qn_count * SUBJECTS_PER_QUESTION))
         with ThreadPoolExecutor(max_workers=3) as pool:
-            subjects_job = pool.submit(api.fetch_scientists, language, pool_size, field_id)
+            subjects_job = pool.submit(api.fetch_scientists, language, pool_size, field_id, is_nobel)
             extra_job = (
-                pool.submit(api.fetch_scientists, language, DISTRACTOR_POOL_SIZE) if field_id else None
+                pool.submit(api.fetch_scientists, language, DISTRACTOR_POOL_SIZE, None, is_nobel)
+                if field_id else None
             )
             fields_job = pool.submit(api.get_fields)
             subjects = subjects_job.result()
             extra = extra_job.result() if extra_job else []
             fields = fields_job.result()
 
+        filters = " and ".join(
+            f for f in (f"fieldId {field_id}" if field_id else "", "isNobel" if is_nobel else "") if f
+        )
+        suffix = f" for {filters}" if filters else ""
         if not subjects:
-            suffix = f" for fieldId {field_id}" if field_id else ""
             return {"error": f"No scientists found{suffix}."}, 404
 
         rng = random.Random()
         ctx = _Context(subjects, extra, fields, rng, field_id)
         eligible = {
             name: [s for s in subjects if check(ctx, s)]
-            for name, (_, check, _, _) in QUESTION_TYPES.items()
+            for name, (_, check, _, category) in QUESTION_TYPES.items()
+            if not is_nobel or category == "nobel"
         }
         used = set()
         usage = Counter()
@@ -589,10 +639,7 @@ def generate_quiz(qn_count: int, language: str, field_id: int | None = None):
                     built.update(category=category, type=qtype)
                     break
             if not built:
-                return {
-                    "error": f"Not enough data to build {qn_count} questions"
-                    + (f" for fieldId {field_id}." if field_id else ".")
-                }, 500
+                return {"error": f"Not enough data to build {qn_count} questions{suffix}."}, 500
             usage[built["type"]] += 1
             subject_usage[_key(built["subject"])] += 1
             rng.shuffle(built["options"])
@@ -607,10 +654,16 @@ def generate_quiz(qn_count: int, language: str, field_id: int | None = None):
         translations = api.translate(pending, language)
 
         field = fields.get(field_id) if field_id else None
+        if field:
+            field = _both(field["en"], field["ar"])
+        elif is_nobel:
+            # The frontend treats Nobel as a field of its own.
+            field = NOBEL_FIELD
         return {
             "qnCount": qn_count,
             "fieldId": field_id,
-            "field": _both(field["en"], field["ar"]) if field else None,
+            "isNobel": is_nobel,
+            "field": field,
             "language": language,
             "en": [_render(q, i, "en", language, translations) for i, q in enumerate(questions)],
             "ar": [_render(q, i, "ar", language, translations) for i, q in enumerate(questions)],

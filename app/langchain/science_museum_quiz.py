@@ -30,8 +30,12 @@ REQUEST_TIMEOUT = 60
 REQUEST_ATTEMPTS = 3
 FIELDS_TTL_SECONDS = 6 * 3600
 DESCRIPTION_LIMIT = 2000
-TRANSLATE_BATCH_SIZE = 60
-TRANSLATE_WORKERS = 4
+# Small batches in parallel: one big batch is slow because output tokens are sequential.
+TRANSLATE_BATCH_SIZE = 15
+TRANSLATE_WORKERS = 10
+
+ARABIC_RE = re.compile(r"[؀-ۿ]")
+LATIN_RE = re.compile(r"[A-Za-z]")
 
 # The API spells Nobel categories inconsistently ("physics", "Chemistry",
 # "medicine" and "Physiology or Medicine" for the same prize).
@@ -46,9 +50,14 @@ NOBEL_ALIASES = {
     "economics": "economics",
 }
 
-translator_llm = init_chat_model(
-    "gpt-4o-mini", model_provider="openai", temperature=0
-).bind(response_format={"type": "json_object"})
+# gpt-4o-mini handles almost everything; the few items it gets wrong (it sometimes
+# returns mixed script like "ماسatoshi كوشيبا", identically on every retry) go to gpt-4o.
+translator_llms = [
+    init_chat_model(model, model_provider="openai", temperature=0).bind(
+        response_format={"type": "json_object"}
+    )
+    for model in ("gpt-4o-mini", "gpt-4o")
+]
 
 _TRANSLATE_PROMPTS = {
     "ar": (
@@ -56,8 +65,10 @@ _TRANSLATE_PROMPTS = {
         "(Modern Standard Arabic). The input is a JSON object. Keys starting with \"n\" "
         "are names of people (scientists, writers, Nobel laureates): transliterate them "
         "the way UAE Arabic-language media (e.g. Al Khaleej, Al Bayan, Emarat Al Youm) "
-        "writes them; Arab figures get their original Arabic spelling. Keys starting with "
-        "\"t\" are short texts: translate them faithfully, keep every \"…\" placeholder "
+        "writes them; Arab figures get their original Arabic spelling. Names must be "
+        "written entirely in Arabic letters, never mixing in Latin letters. Titles become "
+        "their Arabic equivalent (Sir -> السير, Lord -> اللورد, Baroness -> البارونة). "
+        "Keys starting with \"t\" are short texts: translate them faithfully, keep every \"…\" placeholder "
         "exactly where it is and never add a name. Reply with a JSON object mapping the "
         "same keys to the translation only."
     ),
@@ -169,15 +180,19 @@ def _post(url: str, data: dict) -> dict:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 
-def fetch_scientists(language: str, count: int, field_id: int | None = None) -> list:
+def fetch_scientists(
+    language: str, count: int, field_id: int | None = None, nobel_only: bool = False
+) -> list:
     """A fresh random list of scientists (people only, unique ids)."""
     data = {"language": API_LANGUAGES[language], "isQuiz": 1, "interval": count}
     if field_id:
         data["fieldId"] = field_id
+    if nobel_only:
+        data["isNobel"] = 1
     scientists = {}
     for article in _post(SCIENTISTS_API_URL, data).get("articles") or []:
         scientist = _scientist(article)
-        if scientist:
+        if scientist and (scientist["nobels"] or not nobel_only):
             scientist["fieldId"] = field_id
             scientists.setdefault(scientist["id"], scientist)
     return list(scientists.values())
@@ -212,10 +227,10 @@ def get_fields() -> dict:
         return fields
 
 
-def _translate_batch(batch, target: str) -> dict:
+def _translate_batch(batch, target: str, llm) -> dict:
     payload = {f"{'n' if kind == 'name' else 't'}{i}": text for i, (kind, text) in enumerate(batch)}
     try:
-        response = translator_llm.invoke(
+        response = llm.invoke(
             [
                 ("system", _TRANSLATE_PROMPTS[target]),
                 ("human", json.dumps(payload, ensure_ascii=False)),
@@ -228,25 +243,40 @@ def _translate_batch(batch, target: str) -> dict:
     result = {}
     for i, (kind, text) in enumerate(batch):
         value = data.get(f"{'n' if kind == 'name' else 't'}{i}")
-        if isinstance(value, str) and value.strip():
+        if isinstance(value, str) and _is_valid_translation(kind, value.strip(), target):
             result[(kind, text)] = value.strip()
     return result
+
+
+def _is_valid_translation(kind: str, value: str, target: str) -> bool:
+    """Reject empty / half-translated output (e.g. "أولغا توكارczوك")."""
+    if not value:
+        return False
+    if target == "ar":
+        # Texts may keep Latin terms (DNA, ATP); names must be fully Arabic script.
+        return bool(ARABIC_RE.search(value)) and not (kind == "name" and LATIN_RE.search(value))
+    return not ARABIC_RE.search(value)
 
 
 def translate(items, source_language: str) -> dict:
     """Translate {(kind, text)} from the source language into the other one.
 
     kind is "name" (transliterate) or "text" (translate). Returns
-    {(kind, text): translation}; anything that fails is simply missing.
+    {(kind, text): translation}; items that still fail after the gpt-4o retry
+    are simply missing (callers fall back to the source text).
     """
     target = "en" if source_language == "ar" else "ar"
-    items = sorted(set(items))
-    batches = [items[i : i + TRANSLATE_BATCH_SIZE] for i in range(0, len(items), TRANSLATE_BATCH_SIZE)]
+    pending = sorted(set(items))
     result = {}
-    if not batches:
-        return result
-    with ThreadPoolExecutor(max_workers=TRANSLATE_WORKERS) as pool:
-        for part in pool.map(lambda batch: _translate_batch(batch, target), batches):
-            result.update(part)
-    print(f"[science_museum_quiz] Translated {len(result)}/{len(items)} items to {target}.")
+    for llm in translator_llms:
+        if not pending:
+            break
+        batches = [
+            pending[i : i + TRANSLATE_BATCH_SIZE] for i in range(0, len(pending), TRANSLATE_BATCH_SIZE)
+        ]
+        with ThreadPoolExecutor(max_workers=TRANSLATE_WORKERS) as pool:
+            for part in pool.map(lambda batch: _translate_batch(batch, target, llm), batches):
+                result.update(part)
+        pending = [item for item in pending if item not in result]
+    print(f"[science_museum_quiz] Translated {len(result)}/{len(result) + len(pending)} items to {target}.")
     return result

@@ -16,7 +16,8 @@ router = APIRouter(prefix="/science-museum-quiz", tags=["science-museum-quiz"])
 def get_science_museum_quiz(
     qnCount: int,
     language: str | None = None,
-    fieldId: int | None = None,
+    fieldId: str | None = None,
+    isNobel: str | None = None,
 ):
     """
     Generate a Science Museum multiple-choice quiz from a fresh random set of
@@ -26,7 +27,10 @@ def get_science_museum_quiz(
         qnCount:  any whole number from 1 to 99
         language: en | ar (null/empty -> en). Scientists are fetched in this
                   language; the other language is a translation.
-        fieldId:  optional, only scientists of that field (see GET /science-museum-quiz/fields)
+        fieldId:  optional (null/empty/missing/0 -> all fields), only scientists of
+                  that field (see GET /science-museum-quiz/fields)
+        isNobel:  optional, 0 | 1 (null/empty/missing -> 0). 1 -> only Nobel Prize winners
+                  and only Nobel questions (can be combined with fieldId).
 
     Response `en` and `ar` hold the same questions (same order, same option ids).
     Declared sync so FastAPI runs it in its thread pool (HTTP + LLM work).
@@ -43,10 +47,15 @@ def get_science_museum_quiz(
             status_code=400,
             detail=f"language must be one of {list(LANGUAGES)}",
         )
-    if fieldId is not None and fieldId < 1:
+    fieldId = (fieldId or "").strip()
+    if fieldId and not fieldId.isdigit():
         raise HTTPException(status_code=400, detail="fieldId must be a positive integer")
+    fieldId = int(fieldId or 0) or None
+    isNobel = (isNobel or "0").strip() or "0"
+    if isNobel not in ("0", "1"):
+        raise HTTPException(status_code=400, detail="isNobel must be 0 or 1")
 
-    data, status_code = generate_quiz(qnCount, language, fieldId)
+    data, status_code = generate_quiz(qnCount, language, fieldId, isNobel == "1")
     if status_code != 200:
         return {
             "error": data.get("error", "An error occurred"),
