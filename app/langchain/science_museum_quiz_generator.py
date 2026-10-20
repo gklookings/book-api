@@ -639,7 +639,8 @@ def generate_quiz(qn_count: int, language: str, field_id: int | None = None, is_
                     built.update(category=category, type=qtype)
                     break
             if not built:
-                return {"error": f"Not enough data to build {qn_count} questions{suffix}."}, 500
+                # A valid request the data can't satisfy (e.g. 10 questions about a 1-person field).
+                return {"error": f"Not enough data to build {qn_count} questions{suffix}."}, 422
             usage[built["type"]] += 1
             subject_usage[_key(built["subject"])] += 1
             rng.shuffle(built["options"])
@@ -670,7 +671,7 @@ def generate_quiz(qn_count: int, language: str, field_id: int | None = None, is_
         }, 200
     except api.ScienceMuseumApiError as e:
         print(f"[science_museum_quiz] {e}")
-        return {"error": str(e)}, 502
+        return {"error": "The Science Museum service is unavailable. Please try again later."}, 502
     except Exception as e:
         print(f"[science_museum_quiz] Error generating quiz: {e}")
-        return {"error": str(e)}, 500
+        return {"error": "Failed to generate the quiz."}, 500

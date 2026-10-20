@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from app.langchain import science_museum_quiz
 from app.langchain.science_museum_quiz_generator import (
@@ -10,6 +11,11 @@ from app.langchain.science_museum_quiz_generator import (
 )
 
 router = APIRouter(prefix="/science-museum-quiz", tags=["science-museum-quiz"])
+
+
+def _error(message: str, status_code: int) -> JSONResponse:
+    """Every error is a real HTTP status with the same minimal body."""
+    return JSONResponse(status_code=status_code, content={"error": message, "status_code": status_code})
 
 
 @router.get("/questions")
@@ -33,34 +39,28 @@ def get_science_museum_quiz(
                   and only Nobel questions (can be combined with fieldId).
 
     Response `en` and `ar` hold the same questions (same order, same option ids).
+    Errors use the HTTP status and body {"error": message, "status_code": status}:
+        400 invalid params, 404 no scientists for the filter, 422 not enough data
+        for qnCount questions, 502 Science Museum API down, 500 anything else.
     Declared sync so FastAPI runs it in its thread pool (HTTP + LLM work).
     """
     language = (language or DEFAULT_LANGUAGE).strip().lower() or DEFAULT_LANGUAGE
 
     if not MIN_QUESTION_COUNT <= qnCount <= MAX_QUESTION_COUNT:
-        raise HTTPException(
-            status_code=400,
-            detail=f"qnCount must be between {MIN_QUESTION_COUNT} and {MAX_QUESTION_COUNT}",
-        )
+        return _error(f"qnCount must be between {MIN_QUESTION_COUNT} and {MAX_QUESTION_COUNT}", 400)
     if language not in LANGUAGES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"language must be one of {list(LANGUAGES)}",
-        )
+        return _error(f"language must be one of {list(LANGUAGES)}", 400)
     fieldId = (fieldId or "").strip()
     if fieldId and not fieldId.isdigit():
-        raise HTTPException(status_code=400, detail="fieldId must be a positive integer")
+        return _error("fieldId must be a positive integer", 400)
     fieldId = int(fieldId or 0) or None
     isNobel = (isNobel or "0").strip() or "0"
     if isNobel not in ("0", "1"):
-        raise HTTPException(status_code=400, detail="isNobel must be 0 or 1")
+        return _error("isNobel must be 0 or 1", 400)
 
     data, status_code = generate_quiz(qnCount, language, fieldId, isNobel == "1")
     if status_code != 200:
-        return {
-            "error": data.get("error", "An error occurred"),
-            "status_code": status_code,
-        }
+        return _error(data.get("error", "An error occurred"), status_code)
     return {**data, "status_code": status_code}
 
 
